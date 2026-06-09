@@ -27,7 +27,7 @@ services:
       CORS_ORIGINS: http://localhost:5173
       BOOTSTRAP_ADMIN_USERNAME: admin
       BOOTSTRAP_ADMIN_PASSWORD: admin
-      AFIP_MOCK_SUCCESS_RATE: "0.70"
+      AFIP_MOCK_SUCCESS_RATE: "0.50"
       TZ: America/Argentina/Buenos_Aires
     depends_on:
       postgres:
