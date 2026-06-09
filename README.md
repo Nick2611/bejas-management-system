@@ -40,4 +40,4 @@ uv run pytest -q
 El backend de pruebas usa una instancia PostgreSQL temporal y separada. Las
 dependencias se instalan desde `uv.lock` y `package-lock.json`. El script
 construye ambas imágenes, ejecuta backend y frontend en orden y detiene la base
-temporal al finalizar.
+temporal al finalizar..
