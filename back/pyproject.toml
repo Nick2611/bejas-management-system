@@ -1,0 +1,28 @@
+[project]
+name = "back"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.16.5",
+    "fastapi[standard]>=0.136.3",
+    "psycopg2>=2.9.12",
+    "pwdlib>=0.3.0",
+    "pydantic>=2.13.4",
+    "pyjwt>=2.13.0",
+    "requests>=2.34.2",
+    "sqlalchemy>=2.0.50",
+    "sqlmodel>=0.0.38",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:Warning",
+]

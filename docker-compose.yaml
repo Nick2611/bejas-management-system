@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:14.23-trixie
+    container_name: bejas-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: bejas
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: bejas-db
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  back:
+    build:
+      context: ./back
+    container_name: bejas-back
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://bejas:admin@postgres:5432/bejas-db
+      CORS_ORIGINS: http://localhost:5173
+      BOOTSTRAP_ADMIN_USERNAME: admin
+      BOOTSTRAP_ADMIN_PASSWORD: admin
+      AFIP_MOCK_SUCCESS_RATE: "0.70"
+      TZ: America/Argentina/Buenos_Aires
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  front:
+    build:
+      context: ./front
+      args:
+        VITE_API_URL: /api
+    container_name: bejas-front
+    ports:
+      - "5173:80"
+    depends_on:
+      back:
+        condition: service_healthy
+
+  postgres-test:
+    image: postgres:14.23-trixie
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: bejas
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: bejas-test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  back-test:
+    profiles: ["test"]
+    build:
+      context: ./back
+    environment:
+      DATABASE_URL: postgresql+psycopg2://bejas:admin@postgres-test:5432/bejas-test
+      BOOTSTRAP_ADMIN_USERNAME: admin
+      BOOTSTRAP_ADMIN_PASSWORD: admin
+      AFIP_MOCK_SUCCESS_RATE: "1"
+      AFIP_MOCK_SEED: tests
+      RUN_DATABASE_TESTS: "1"
+      TZ: America/Argentina/Buenos_Aires
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -c
+      - /app/.venv/bin/python reset_test_db.py && /app/.venv/bin/python migrate.py && /app/.venv/bin/python -m pytest -q
+
+  front-test:
+    profiles: ["test"]
+    build:
+      context: ./front
+      target: test
+
+volumes:
+  postgres-data:

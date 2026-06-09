@@ -1,0 +1,128 @@
+[
+  {
+    "name": "IPA",
+    "type": "cerveza",
+    "price": 4800,
+    "qty": 80,
+    "unit": "pinta",
+    "minimum_qty": 15,
+    "capacity_qty": 100
+  },
+  {
+    "name": "Golden",
+    "type": "cerveza",
+    "price": 4300,
+    "qty": 80,
+    "unit": "pinta",
+    "minimum_qty": 15,
+    "capacity_qty": 100
+  },
+  {
+    "name": "Honey",
+    "type": "cerveza",
+    "price": 4500,
+    "qty": 70,
+    "unit": "pinta",
+    "minimum_qty": 15,
+    "capacity_qty": 100
+  },
+  {
+    "name": "Scottish",
+    "type": "cerveza",
+    "price": 4600,
+    "qty": 70,
+    "unit": "pinta",
+    "minimum_qty": 15,
+    "capacity_qty": 100
+  },
+  {
+    "name": "Stout",
+    "type": "cerveza",
+    "price": 4700,
+    "qty": 60,
+    "unit": "pinta",
+    "minimum_qty": 12,
+    "capacity_qty": 80
+  },
+  {
+    "name": "Empanadas",
+    "type": "comida",
+    "price": 1800,
+    "qty": 120,
+    "unit": "unidad",
+    "minimum_qty": 20,
+    "capacity_qty": 150
+  },
+  {
+    "name": "Papas fritas",
+    "type": "comida",
+    "price": 5200,
+    "qty": 50,
+    "unit": "porción",
+    "minimum_qty": 10,
+    "capacity_qty": 70
+  },
+  {
+    "name": "Pizza muzzarella",
+    "type": "comida",
+    "price": 9800,
+    "qty": 35,
+    "unit": "unidad",
+    "minimum_qty": 8,
+    "capacity_qty": 50
+  },
+  {
+    "name": "Hamburguesa completa",
+    "type": "comida",
+    "price": 10500,
+    "qty": 40,
+    "unit": "unidad",
+    "minimum_qty": 8,
+    "capacity_qty": 60
+  },
+  {
+    "name": "Gin tonic",
+    "type": "trago",
+    "price": 6500,
+    "qty": 45,
+    "unit": "copa",
+    "minimum_qty": 10,
+    "capacity_qty": 60
+  },
+  {
+    "name": "Fernet con cola",
+    "type": "trago",
+    "price": 6000,
+    "qty": 50,
+    "unit": "vaso",
+    "minimum_qty": 10,
+    "capacity_qty": 70
+  },
+  {
+    "name": "Mojito",
+    "type": "trago",
+    "price": 6500,
+    "qty": 35,
+    "unit": "vaso",
+    "minimum_qty": 8,
+    "capacity_qty": 50
+  },
+  {
+    "name": "Agua mineral",
+    "type": "bebida",
+    "price": 2200,
+    "qty": 80,
+    "unit": "botella",
+    "minimum_qty": 15,
+    "capacity_qty": 100
+  },
+  {
+    "name": "Gaseosa",
+    "type": "bebida",
+    "price": 2800,
+    "qty": 80,
+    "unit": "botella",
+    "minimum_qty": 15,
+    "capacity_qty": 100
+  }
+]
