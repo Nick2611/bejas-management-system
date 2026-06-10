@@ -4,7 +4,7 @@ from db.db_conn import SessionDep
 from auth.utils.jwt_encode import jwt_encode_user
 from auth.auth import is_admin, validate_token
 from users.models.user_dto import CreateUserRequest, LoginRequest
-from fastapi import HTTPException, Depends
+from fastapi import HTTPException, Depends, Request
 
 from typing import Annotated
 
@@ -12,10 +12,18 @@ from typing import Annotated
 from users.users_service.users_service import UserService
 from auth.auth_models import Token
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.middleware import SlowAPIMiddleware
+
+limiter = Limiter(key_func=get_remote_address)
+
 auth_router = APIRouter(prefix="/auth")
 
 @auth_router.post("")
+@limiter.limit("5/minute")
 def login(
+    request: Request,
     payload: LoginRequest,
     session: SessionDep, 
     ):
