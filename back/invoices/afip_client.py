@@ -8,7 +8,37 @@ from typing import Protocol
 from shared.time_utils import local_today
 
 
-class AfipUnavailableError(RuntimeError):
+class AfipError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        response_payload: dict | None = None,
+    ):
+        super().__init__(message)
+        self.response_payload = response_payload or {
+            "authorized": False,
+            "reason": message,
+            "mock": True,
+        }
+
+
+class AfipTemporaryError(AfipError):
+    pass
+
+
+class AfipUnavailableError(AfipTemporaryError):
+    pass
+
+
+class AfipTimeoutError(AfipTemporaryError):
+    pass
+
+
+class AfipRejectedError(AfipError):
+    pass
+
+
+class InvalidFiscalPayloadError(AfipError):
     pass
 
 
@@ -27,7 +57,7 @@ class AfipClient(Protocol):
 class MockAfipClient:
     def __init__(
         self,
-        success_rate: float = 0.70,
+        success_rate: float = 0.90,
         random_generator: random.Random | None = None,
     ):
         if not 0 <= success_rate <= 1:
@@ -37,8 +67,17 @@ class MockAfipClient:
 
     def authorize(self, request_payload: dict) -> AfipAuthorization:
         if self.random.random() >= self.success_rate:
-            raise AfipUnavailableError(
-                "AFIP no está disponible en este momento"
+            raise AfipRejectedError(
+                "Comprobante rechazado por validación fiscal simulada",
+                {
+                    "authorized": False,
+                    "result": "R",
+                    "reason": (
+                        "Comprobante rechazado por validación fiscal simulada"
+                    ),
+                    "mock": True,
+                    "request_id": request_payload.get("request_id"),
+                },
             )
 
         cae = "".join(str(self.random.randint(0, 9)) for _ in range(14))
@@ -58,7 +97,7 @@ class MockAfipClient:
 
 @lru_cache
 def get_afip_client() -> MockAfipClient:
-    success_rate = float(os.getenv("AFIP_MOCK_SUCCESS_RATE", "0.70"))
+    success_rate = float(os.getenv("AFIP_MOCK_SUCCESS_RATE", "0.90"))
     seed_value = os.getenv("AFIP_MOCK_SEED")
     generator = (
         random.Random(seed_value)

@@ -1,13 +1,15 @@
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import ValidationError
 
 from auth.auth import is_admin
 from db.db_conn import SessionDep
 from invoices.models.invoice_models import (
     InvoiceReportResponse,
     InvoiceResponse,
+    PendingInvoiceSummaryResponse,
     RetryInvoicePeriodRequest,
     RetryInvoicePeriodResponse,
 )
@@ -34,6 +36,33 @@ def invoice_report(
     claims: AdminClaims,
 ):
     return InvoiceService(session).report(date)
+
+
+@invoice_router.get(
+    "/pending-summary",
+    response_model=PendingInvoiceSummaryResponse,
+)
+def pending_invoice_summary(
+    session: SessionDep,
+    claims: AdminClaims,
+    period: Literal["diario", "mensual"],
+    date_filter: date | None = Query(default=None, alias="date"),
+    year: int | None = Query(default=None, ge=1),
+    month: int | None = Query(default=None, ge=1, le=12),
+):
+    try:
+        payload = RetryInvoicePeriodRequest(
+            period=period,
+            date=date_filter,
+            year=year,
+            month=month,
+        )
+    except ValidationError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=error.errors(),
+        ) from error
+    return InvoiceService(session).pending_summary(payload)
 
 
 @invoice_router.post(

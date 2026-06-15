@@ -1,5 +1,6 @@
 from decimal import Decimal, ROUND_HALF_UP
 from http import HTTPStatus
+from typing import Callable
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -20,17 +21,28 @@ from closings.repository.closing_repository import (
     CashClosingRepository,
     ClosingRepository,
 )
+from closings.service.fiscal_period_guard import FiscalPeriodGuard
 from db.db_models import (
     CashClosingRevisionModel,
     CashClosingModel,
     ClosingItemModel,
     ClosingPaymentModel,
     ClosingsModel,
+    OutboxModel,
 )
 from invoices.afip_client import AfipClient
-from invoices.service.invoice_service import InvoiceService
+from invoices.models.invoice_models import InvoiceResponse
+from invoices.service.invoice_service import (
+    INVOICE_AUTHORIZED,
+    INVOICE_AUTHORIZING,
+    INVOICE_PENDING,
+    INVOICE_QUEUED,
+    INVOICE_REJECTED,
+    INVOICE_RETRY_PENDING,
+    InvoiceService,
+)
 from shared.time_utils import day_bounds, local_now
-from shared.utils import commit_session
+from shared.utils import commit_session, publish_afip_messages
 from tables.repository.table_repository import TableRepository
 
 
@@ -39,12 +51,19 @@ class ClosingService:
         self,
         session: Session,
         afip_client: AfipClient | None = None,
+        message_publisher: Callable[[list[dict]], int] | None = None,
     ):
         self.session = session
         self.repository = ClosingRepository(session)
         self.cash_repository = CashClosingRepository(session)
         self.table_repository = TableRepository(session)
-        self.invoice_service = InvoiceService(session, afip_client)
+        self.fiscal_period_guard = FiscalPeriodGuard(session)
+        self.message_publisher = message_publisher or publish_afip_messages
+        self.invoice_service = InvoiceService(
+            session,
+            afip_client,
+            self.message_publisher,
+        )
 
     def _response(self, closing: ClosingsModel) -> ClosingResponse:
         invoice = (
@@ -59,6 +78,9 @@ class ClosingService:
             table_name=closing.table_name,
             opening_time=closing.opening_time,
             closing_time=closing.closing_time,
+            business_date=(
+                closing.business_date or closing.closing_time.date()
+            ),
             people=closing.people,
             served_by=closing.served_by,
             subtotal=closing.subtotal,
@@ -67,6 +89,10 @@ class ClosingService:
             amount_received=amount_received,
             change=max(amount_received - closing.total, 0),
             status=closing.status,
+            invoicing_status=(
+                getattr(closing, "invoicing_status", None)
+                or "SALE_REGISTERED"
+            ),
             cash_closing_id=closing.cash_closing_id,
             items=[
                 ClosingItemResponse(
@@ -175,12 +201,18 @@ class ClosingService:
             table_name=table.table_name,
             opening_time=table.opening_time,
             closing_time=closing_time,
+            business_date=closing_time.date(),
             people=table.people,
             served_by=user_id,
             subtotal=subtotal,
             discount=discount,
             total=total,
             status="cerrada",
+            invoicing_status=(
+                "SALE_INVOICING_PENDING"
+                if total > 0
+                else "SALE_REGISTERED"
+            ),
             items=[
                 ClosingItemModel(
                     product_id=item.product_id,
@@ -203,23 +235,18 @@ class ClosingService:
         )
         self.repository.add(closing)
 
-        electronic_payment = any(
-            payment.method != "efectivo" for payment in payload.payments
-        )
         afip_authorized: bool | None = None
+        invoice_outbox: OutboxModel | None = None
         warning: str | None = None
         try:
             self.session.flush()
-            if electronic_payment and total > 0:
-                _, afip_authorized = self.invoice_service.create_for_closing(
-                    closing
-                )
-                if not afip_authorized:
-                    warning = (
-                        "La venta se cerró, pero AFIP no respondió. "
-                        "La factura quedó pendiente."
+            if total > 0:
+                _, invoice_outbox = (
+                    self.invoice_service.create_for_closing(
+                        closing,
+                        "sale_close",
                     )
-
+                )
             table.items.clear()
             table.people = 0
             table.opening_time = closing_time
@@ -228,12 +255,48 @@ class ClosingService:
             self.session.rollback()
             raise
 
+        if invoice_outbox is not None:
+            published_count = self.invoice_service.publish_outboxes(
+                [invoice_outbox]
+            )
+            if published_count == 0:
+                warning = (
+                    "La venta y su factura quedaron registradas, pero "
+                    "la autorización sigue pendiente de publicación."
+                )
+
         persisted = self.repository.get_by_id(closing.id)
         return CloseTableResponse(
             closing=self._response(persisted),
             afip_authorized=afip_authorized,
             warning=warning,
         )
+
+    def issue_ticket(self, closing_id: int) -> InvoiceResponse:
+        closing = self.repository.get_by_id_for_update(closing_id)
+        if closing is None:
+            raise HTTPException(
+                status_code=HTTPStatus.NOT_FOUND,
+                detail="Venta no encontrada",
+            )
+        if closing.total <= 0:
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail="La venta no tiene importe para declarar",
+            )
+
+        invoice = closing.invoice
+        if invoice is not None:
+            return self.invoice_service._response(invoice)
+
+        invoice, outbox = self.invoice_service.create_for_closing(
+            closing,
+            "ticket",
+        )
+
+        commit_session(self.session)
+        self.invoice_service.publish_outboxes([outbox])
+        return self.invoice_service._response(invoice)
 
     def list_closings(
         self,
@@ -284,17 +347,25 @@ class ClosingService:
         payload: CreateCashClosingRequest,
         user_id: int,
     ) -> CashClosingResponse:
-        if self.cash_repository.get_by_date(payload.business_date):
-            raise HTTPException(
-                status_code=HTTPStatus.CONFLICT,
-                detail="Ya existe un cierre para esa fecha",
-            )
         start, end = day_bounds(payload.business_date)
         sales = self.repository.get_unclosed_sales(start, end)
         if not sales:
             raise HTTPException(
                 status_code=HTTPStatus.CONFLICT,
                 detail="No hay ventas pendientes de cierre para esa fecha",
+            )
+        issues = self._cash_closing_issues(sales)
+        if issues:
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail={
+                    "code": "CASH_CLOSING_BLOCKED",
+                    "message": (
+                        "El cierre de caja no puede realizarse porque hay "
+                        "ventas con inconsistencias fiscales u operativas."
+                    ),
+                    "issues": issues,
+                },
             )
         totals = self._payment_totals(sales)
         total_sales = sum(sale.total for sale in sales)
@@ -314,8 +385,94 @@ class ClosingService:
         self.cash_repository.add(cash_closing)
         commit_session(self.session)
         return self._cash_response(
-            self.cash_repository.get_by_date(payload.business_date)
+            self.cash_repository.get_by_id(cash_closing.id)
         )
+
+    @staticmethod
+    def _cash_closing_issues(
+        sales: list[ClosingsModel],
+    ) -> list[dict]:
+        issues: list[dict] = []
+        pending_statuses = {
+            INVOICE_PENDING,
+            INVOICE_QUEUED,
+            INVOICE_AUTHORIZING,
+            INVOICE_RETRY_PENDING,
+        }
+        for sale in sales:
+            paid_total = sum(payment.amount for payment in sale.payments)
+            if sale.subtotal - sale.discount != sale.total:
+                issues.append(
+                    {
+                        "code": "SALE_TOTAL_MISMATCH",
+                        "sale_id": sale.id,
+                        "message": (
+                            "El subtotal menos el descuento no coincide "
+                            "con el total de la venta."
+                        ),
+                    }
+                )
+            if paid_total < sale.total:
+                issues.append(
+                    {
+                        "code": "SALE_PAYMENT_MISMATCH",
+                        "sale_id": sale.id,
+                        "message": (
+                            f"Los pagos suman {paid_total} y la venta "
+                            f"totaliza {sale.total}."
+                        ),
+                    }
+                )
+            if sale.total <= 0:
+                continue
+            if sale.invoice is None:
+                issues.append(
+                    {
+                        "code": "SALE_WITHOUT_INVOICE",
+                        "sale_id": sale.id,
+                        "message": "La venta no tiene factura asociada.",
+                    }
+                )
+                continue
+
+            invoice_status = InvoiceService._normalized_status(
+                sale.invoice.status
+            )
+            if invoice_status in pending_statuses:
+                issues.append(
+                    {
+                        "code": "INVOICE_PENDING",
+                        "sale_id": sale.id,
+                        "invoice_id": sale.invoice.id,
+                        "message": (
+                            "La factura todavía no terminó su autorización."
+                        ),
+                    }
+                )
+            elif invoice_status == INVOICE_REJECTED:
+                issues.append(
+                    {
+                        "code": "INVOICE_REJECTED",
+                        "sale_id": sale.id,
+                        "invoice_id": sale.invoice.id,
+                        "message": (
+                            sale.invoice.rejection_reason
+                            or "La factura fue rechazada."
+                        ),
+                    }
+                )
+            elif invoice_status != INVOICE_AUTHORIZED:
+                issues.append(
+                    {
+                        "code": "INVOICE_NOT_AUTHORIZED",
+                        "sale_id": sale.id,
+                        "invoice_id": sale.invoice.id,
+                        "message": (
+                            f"La factura está en estado {invoice_status}."
+                        ),
+                    }
+                )
+        return issues
 
     def list_cash_closings(self) -> list[CashClosingResponse]:
         return [
@@ -350,6 +507,10 @@ class ClosingService:
                 status_code=HTTPStatus.NOT_FOUND,
                 detail="Cierre de caja no encontrado",
             )
+        self.fiscal_period_guard.ensure_cash_closing_mutable(
+            cash_closing.id,
+            action=f"modificar el cierre de caja {cash_closing.id}",
+        )
 
         previous_counted_cash = cash_closing.counted_cash
         previous_notes = cash_closing.notes
@@ -407,7 +568,7 @@ class ClosingService:
         sales = self.repository.get_month_sales(year, month)
         totals = self._payment_totals(sales)
         total_sales = sum(sale.total for sale in sales)
-        active_days = len({sale.closing_time.date() for sale in sales})
+        active_days = len({sale.business_date for sale in sales})
         return MonthlyClosingSummaryResponse(
             year=year,
             month=month,

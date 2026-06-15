@@ -5,11 +5,13 @@ from pydantic import ConfigDict
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Column,
     Date,
     Enum,
     ForeignKey,
     Integer,
     String,
+    Table,
     Text,
     UniqueConstraint,
 )
@@ -24,7 +26,37 @@ PAYMENT_METHODS = (
     "mercado_pago",
 )
 SALE_STATUSES = ("cerrada", "anulada")
-INVOICE_STATUSES = ("pendiente", "autorizada", "rechazada", "anulada")
+SALE_INVOICING_STATUSES = (
+    "SALE_REGISTERED",
+    "SALE_INVOICING_PENDING",
+    "SALE_INVOICED",
+    "SALE_INVOICE_REJECTED",
+)
+INVOICE_STATUSES = (
+    "INVOICE_PENDING",
+    "INVOICE_QUEUED",
+    "INVOICE_AUTHORIZING",
+    "INVOICE_AUTHORIZED",
+    "INVOICE_REJECTED",
+    "INVOICE_CANCELLED",
+    "INVOICE_RETRY_PENDING",
+)
+INVOICE_DECLARATION_TYPES = (
+    "ticket",
+    "diario",
+    "mensual",
+    "legacy",
+)
+CLOSURE_PERIOD_TYPES = ("DAY", "MONTH", "CUSTOM")
+FISCAL_CLOSURE_STATUSES = (
+    "CLOSURE_DRAFT",
+    "CLOSURE_VALIDATING",
+    "CLOSURE_BLOCKED",
+    "CLOSURE_READY",
+    "CLOSURE_DECLARED",
+    "CLOSURE_CANCELLED",
+)
+CLOSURE_ISSUE_SEVERITIES = ("BLOCKING", "WARNING")
 CASH_CLOSING_STATUSES = ("abierto", "cerrado")
 GOAL_PERIODS = ("diario", "semanal", "mensual")
 STOCK_MOVEMENT_TYPES = (
@@ -39,6 +71,43 @@ STOCK_MOVEMENT_TYPES = (
 
 class Base(DeclarativeBase):
     pass
+
+
+invoice_closings_table = Table(
+    "invoice_closings",
+    Base.metadata,
+    Column(
+        "invoice_id",
+        ForeignKey("public.invoices.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "closing_id",
+        ForeignKey("public.closings.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    UniqueConstraint(
+        "closing_id",
+        name="uq_invoice_closings_closing_id",
+    ),
+    schema="public",
+)
+
+fiscal_closure_invoices_table = Table(
+    "fiscal_closure_invoices",
+    Base.metadata,
+    Column(
+        "closure_id",
+        ForeignKey("public.fiscal_closures.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "invoice_id",
+        ForeignKey("public.invoices.id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    schema="public",
+)
 
 
 class UserModel(Base):
@@ -156,7 +225,7 @@ class CashClosingModel(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    business_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+    business_date: Mapped[date] = mapped_column(Date, index=True)
     closed_at: Mapped[datetime] = mapped_column(default=datetime.now)
     closed_by_id: Mapped[int] = mapped_column(ForeignKey(UserModel.id))
     total_sales: Mapped[int] = mapped_column(Integer, default=0)
@@ -243,6 +312,7 @@ class ClosingsModel(Base):
         default=datetime.now,
         index=True,
     )
+    business_date: Mapped[date] = mapped_column(Date, index=True)
     people: Mapped[int]
     served_by: Mapped[int] = mapped_column(ForeignKey(UserModel.id))
     subtotal: Mapped[int]
@@ -251,6 +321,14 @@ class ClosingsModel(Base):
     status: Mapped[str] = mapped_column(
         Enum(*SALE_STATUSES, name="sale_status", native_enum=False),
         default="cerrada",
+    )
+    invoicing_status: Mapped[str] = mapped_column(
+        Enum(
+            *SALE_INVOICING_STATUSES,
+            name="sale_invoicing_status",
+            native_enum=False,
+        ),
+        default="SALE_REGISTERED",
     )
     cash_closing_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey(CashClosingModel.id),
@@ -271,9 +349,10 @@ class ClosingsModel(Base):
         cascade="all, delete-orphan",
     )
     invoice: Mapped[Optional["InvoiceModel"]] = relationship(
-        back_populates="closing",
-        cascade="all, delete-orphan",
+        secondary=invoice_closings_table,
+        back_populates="closings",
         uselist=False,
+        passive_deletes=True,
     )
 
     @property
@@ -367,33 +446,103 @@ class InvoiceModel(Base):
         ),
         CheckConstraint("point_of_sale > 0", name="ck_invoices_point_of_sale"),
         CheckConstraint("voucher_number > 0", name="ck_invoices_voucher_number"),
+        CheckConstraint("total > 0", name="ck_invoices_total"),
+        CheckConstraint("sales_count > 0", name="ck_invoices_sales_count"),
+        CheckConstraint(
+            "declaration_type IN ('ticket', 'diario', 'mensual', 'legacy')",
+            name="ck_invoices_declaration_type",
+        ),
         {"schema": "public"},
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    closing_id: Mapped[int] = mapped_column(
-        ForeignKey(ClosingsModel.id, ondelete="CASCADE"),
-        unique=True,
-    )
     voucher_type: Mapped[str] = mapped_column(String(20))
     point_of_sale: Mapped[int]
     voucher_number: Mapped[int]
     issued_at: Mapped[datetime] = mapped_column(default=datetime.now)
+    declaration_type: Mapped[str] = mapped_column(String(20))
+    total: Mapped[int]
+    sales_count: Mapped[int]
+    period_start: Mapped[Optional[datetime]]
+    period_end: Mapped[Optional[datetime]]
     cae: Mapped[Optional[str]] = mapped_column(String(30))
     cae_expiration: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[str] = mapped_column(
         Enum(*INVOICE_STATUSES, name="invoice_status", native_enum=False),
-        default="pendiente",
+        default="INVOICE_PENDING",
     )
     afip_request: Mapped[Optional[dict]] = mapped_column(JSONB)
     afip_response: Mapped[Optional[dict]] = mapped_column(JSONB)
+    authorization_date: Mapped[Optional[datetime]]
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        default=datetime.now,
+        onupdate=datetime.now,
+        index=True,
+    )
 
-    closing: Mapped["ClosingsModel"] = relationship(back_populates="invoice")
+    closings: Mapped[List["ClosingsModel"]] = relationship(
+        secondary=invoice_closings_table,
+        back_populates="invoice",
+        passive_deletes=True,
+    )
     attempts: Mapped[List["InvoiceAttemptModel"]] = relationship(
         back_populates="invoice",
         cascade="all, delete-orphan",
         order_by="InvoiceAttemptModel.attempted_at",
     )
+    fiscal_closures: Mapped[List["FiscalClosureModel"]] = relationship(
+        secondary=fiscal_closure_invoices_table,
+        back_populates="invoices",
+    )
+
+    @property
+    def authorization_code(self) -> str | None:
+        return self.cae
+
+    @authorization_code.setter
+    def authorization_code(self, value: str | None) -> None:
+        self.cae = value
+
+    @property
+    def fiscal_payload_json(self) -> dict | None:
+        return self.afip_request
+
+    @fiscal_payload_json.setter
+    def fiscal_payload_json(self, value: dict | None) -> None:
+        self.afip_request = value
+
+    @property
+    def arca_response_json(self) -> dict | None:
+        return self.afip_response
+
+    @arca_response_json.setter
+    def arca_response_json(self, value: dict | None) -> None:
+        self.afip_response = value
+
+
+class OutboxModel(Base):
+    __tablename__ = "outbox_invoices"
+    __table_args__ = {"schema": "public"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    invoice_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey(InvoiceModel.id, ondelete="CASCADE"),
+        index=True,
+    )
+    correlation_id: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        unique=True,
+    )
+    payload: Mapped[Optional[dict]] = mapped_column(JSONB)
+    is_processed: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+    published_at: Mapped[Optional[datetime]]
 
 
 class InvoiceAttemptModel(Base):
@@ -413,8 +562,111 @@ class InvoiceAttemptModel(Base):
     error: Mapped[Optional[str]] = mapped_column(Text)
     request_payload: Mapped[Optional[dict]] = mapped_column(JSONB)
     response_payload: Mapped[Optional[dict]] = mapped_column(JSONB)
+    attempt_number: Mapped[int]
+    status_before: Mapped[str] = mapped_column(String(40))
+    status_after: Mapped[str] = mapped_column(String(40))
+    error_reason: Mapped[Optional[str]] = mapped_column(Text)
+    correlation_id: Mapped[Optional[str]] = mapped_column(String(64))
+    worker_id: Mapped[Optional[str]] = mapped_column(String(100))
 
     invoice: Mapped["InvoiceModel"] = relationship(back_populates="attempts")
+
+
+class FiscalClosureModel(Base):
+    __tablename__ = "fiscal_closures"
+    __table_args__ = (
+        UniqueConstraint(
+            "period_type",
+            "period_from",
+            "period_to",
+            name="uq_fiscal_closures_period",
+        ),
+        CheckConstraint(
+            "period_to >= period_from",
+            name="ck_fiscal_closures_period",
+        ),
+        {"schema": "public"},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    period_type: Mapped[str] = mapped_column(
+        Enum(
+            *CLOSURE_PERIOD_TYPES,
+            name="closure_period_type",
+            native_enum=False,
+        ),
+    )
+    period_from: Mapped[date] = mapped_column(Date, index=True)
+    period_to: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(
+        Enum(
+            *FISCAL_CLOSURE_STATUSES,
+            name="fiscal_closure_status",
+            native_enum=False,
+        ),
+        default="CLOSURE_DRAFT",
+    )
+    total_sales_amount: Mapped[int] = mapped_column(default=0)
+    total_authorized_amount: Mapped[int] = mapped_column(default=0)
+    total_pending_amount: Mapped[int] = mapped_column(default=0)
+    total_rejected_amount: Mapped[int] = mapped_column(default=0)
+    sales_count: Mapped[int] = mapped_column(default=0)
+    invoices_count: Mapped[int] = mapped_column(default=0)
+    authorized_invoices_count: Mapped[int] = mapped_column(default=0)
+    pending_invoices_count: Mapped[int] = mapped_column(default=0)
+    rejected_invoices_count: Mapped[int] = mapped_column(default=0)
+    sales_without_invoice_count: Mapped[int] = mapped_column(default=0)
+    declared_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        default=datetime.now,
+        onupdate=datetime.now,
+    )
+
+    invoices: Mapped[List["InvoiceModel"]] = relationship(
+        secondary=fiscal_closure_invoices_table,
+        back_populates="fiscal_closures",
+    )
+    validation_issues: Mapped[List["ClosureValidationIssueModel"]] = (
+        relationship(
+            back_populates="closure",
+            cascade="all, delete-orphan",
+        )
+    )
+
+
+class ClosureValidationIssueModel(Base):
+    __tablename__ = "closure_validation_issues"
+    __table_args__ = {"schema": "public"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    closure_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey(FiscalClosureModel.id, ondelete="CASCADE"),
+        index=True,
+    )
+    period_from: Mapped[date] = mapped_column(Date, index=True)
+    period_to: Mapped[date] = mapped_column(Date)
+    issue_type: Mapped[str] = mapped_column(String(60), index=True)
+    severity: Mapped[str] = mapped_column(
+        Enum(
+            *CLOSURE_ISSUE_SEVERITIES,
+            name="closure_issue_severity",
+            native_enum=False,
+        ),
+    )
+    sale_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey(ClosingsModel.id, ondelete="SET NULL"),
+    )
+    invoice_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey(InvoiceModel.id, ondelete="SET NULL"),
+    )
+    description: Mapped[str] = mapped_column(Text)
+    suggested_action: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+
+    closure: Mapped[Optional["FiscalClosureModel"]] = relationship(
+        back_populates="validation_issues",
+    )
 
 
 class SalesGoalModel(Base):

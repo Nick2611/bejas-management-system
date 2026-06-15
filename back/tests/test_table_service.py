@@ -10,7 +10,13 @@ from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tables.models.table_models import RemovePeopleRequest, RemoveProductRequest
+from tables.models.table_models import (
+    AddProductRequest,
+    CreateTableRequest,
+    OccupyTableRequest,
+    RemovePeopleRequest,
+    RemoveProductRequest,
+)
 from tables.service.table_service import TableService
 
 
@@ -39,6 +45,71 @@ class TableServiceTest(unittest.TestCase):
         self.session = FakeSession()
         self.service = TableService(session=self.session)
         self.service.repository = MagicMock()
+
+    def test_create_table_is_independent_from_fiscal_declarations(self):
+        self.service.repository.get_any_by_number.return_value = None
+
+        table = self.service.create_table(CreateTableRequest(table_number=9))
+
+        self.assertEqual(table.table_number, 9)
+        self.assertEqual(self.session.commits, 1)
+        self.service.repository.add.assert_called_once_with(table)
+
+    def test_occupy_table_is_independent_from_fiscal_declarations(self):
+        table = SimpleNamespace(
+            table_number=4,
+            people=0,
+            items=[],
+            opening_time=None,
+        )
+        self.service.repository.get_by_number.return_value = table
+
+        result = self.service.occupy_table(
+            4,
+            OccupyTableRequest(people=2),
+        )
+
+        self.assertEqual(result.people, 2)
+        self.assertIsNotNone(result.opening_time)
+        self.assertEqual(self.session.commits, 1)
+
+    @patch("tables.service.table_service.ProductsRepository")
+    def test_add_products_is_independent_from_fiscal_declarations(
+        self,
+        products_repository_class,
+    ):
+        table = SimpleNamespace(id=1, table_number=4, items=[])
+        product = SimpleNamespace(
+            id=2,
+            name="IPA",
+            type="cerveza",
+            unit="pinta",
+            price=1000,
+            qty=10,
+        )
+        self.service.repository.get_by_number.return_value = table
+        products_repository_class.return_value.get_active_by_id.return_value = (
+            product
+        )
+        original_commit = self.session.commit
+
+        def assign_item_ids():
+            for index, item in enumerate(table.items, 1):
+                item.id = index
+                item.product_id = product.id
+            original_commit()
+
+        self.session.commit = assign_item_ids
+
+        response = self.service.add_products(
+            4,
+            [AddProductRequest(product_id=2, quantity=1)],
+        )
+
+        self.assertEqual(response.table_number, 4)
+        self.assertEqual(product.qty, 9)
+        self.assertEqual(len(table.items), 1)
+        self.assertEqual(self.session.commits, 1)
 
     @patch("tables.service.table_service.ProductsRepository")
     def test_remove_product_reduces_quantity_and_restores_stock(

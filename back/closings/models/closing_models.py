@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from invoices.models.invoice_models import InvoiceResponse
 
@@ -56,6 +56,7 @@ class ClosingResponse(BaseModel):
     table_name: str | None
     opening_time: datetime
     closing_time: datetime
+    business_date: date
     people: int
     served_by: int
     subtotal: int
@@ -64,6 +65,7 @@ class ClosingResponse(BaseModel):
     amount_received: int
     change: int
     status: str
+    invoicing_status: str
     cash_closing_id: int | None
     items: list[ClosingItemResponse]
     payments: list[ClosingPaymentResponse]
@@ -137,3 +139,91 @@ class MonthlyClosingSummaryResponse(BaseModel):
     total_credit_card: int
     total_debit_card: int
     total_mercado_pago: int
+
+
+class ClosurePeriodRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    period_from: date = Field(alias="periodFrom")
+    period_to: date = Field(alias="periodTo")
+    period_type: Literal["DAY", "MONTH", "CUSTOM"] = Field(
+        alias="periodType"
+    )
+
+    @model_validator(mode="after")
+    def validate_period(self):
+        if self.period_to < self.period_from:
+            raise ValueError(
+                "periodTo no puede ser anterior a periodFrom"
+            )
+        if self.period_type == "DAY" and self.period_to != self.period_from:
+            raise ValueError(
+                "Un período DAY debe comenzar y terminar el mismo día"
+            )
+        return self
+
+
+class FiscalPeriodSummaryResponse(BaseModel):
+    period_from: date
+    period_to: date
+    sales_count: int
+    total_sales_amount: int
+    invoices_count: int
+    authorized_invoices_count: int
+    pending_invoices_count: int
+    rejected_invoices_count: int
+    sales_without_invoice_count: int
+    total_authorized_amount: int
+    total_pending_amount: int
+    total_rejected_amount: int
+
+
+class ClosureValidationIssueResponse(BaseModel):
+    issue_type: str
+    severity: Literal["BLOCKING", "WARNING"]
+    sale_id: int | None
+    invoice_id: int | None
+    description: str
+    suggested_action: str
+
+
+class ClosureValidationResponse(BaseModel):
+    can_declare: bool
+    status: Literal[
+        "CLOSURE_BLOCKED",
+        "CLOSURE_READY",
+        "CLOSURE_DECLARED",
+    ]
+    summary: FiscalPeriodSummaryResponse
+    issues: list[ClosureValidationIssueResponse]
+    existing_closure_id: int | None = None
+    message: str
+
+
+class FiscalClosureResponse(BaseModel):
+    id: int
+    period_type: Literal["DAY", "MONTH", "CUSTOM"]
+    period_from: date
+    period_to: date
+    status: str
+    total_sales_amount: int
+    total_authorized_amount: int
+    total_pending_amount: int
+    total_rejected_amount: int
+    sales_count: int
+    invoices_count: int
+    authorized_invoices_count: int
+    pending_invoices_count: int
+    rejected_invoices_count: int
+    sales_without_invoice_count: int
+    declared_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    invoices: list[InvoiceResponse]
+    issues: list[ClosureValidationIssueResponse]
+
+
+class DeclarePeriodResponse(BaseModel):
+    closure: FiscalClosureResponse
+    already_declared: bool
+    message: str

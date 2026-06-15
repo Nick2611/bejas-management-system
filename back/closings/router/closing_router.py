@@ -3,17 +3,24 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, status
 
-from auth.auth import is_admin
+from auth.auth import is_admin, validate_token
 from closings.models.closing_models import (
     CashClosingRevisionResponse,
     CashClosingResponse,
+    ClosurePeriodRequest,
+    ClosureValidationResponse,
     ClosingResponse,
     CreateCashClosingRequest,
+    DeclarePeriodResponse,
+    FiscalClosureResponse,
+    FiscalPeriodSummaryResponse,
     MonthlyClosingSummaryResponse,
     UpdateCashClosingRequest,
 )
+from closings.service.fiscal_closure_service import FiscalClosureService
 from closings.service.closing_service import ClosingService
 from db.db_conn import SessionDep
+from invoices.models.invoice_models import InvoiceResponse
 
 
 closing_router = APIRouter(prefix="/closings", tags=["closings"])
@@ -22,6 +29,7 @@ cash_closing_router = APIRouter(
     tags=["cash-closings"],
 )
 AdminClaims = Annotated[dict, Depends(is_admin)]
+AuthenticatedClaims = Annotated[dict, Depends(validate_token)]
 
 
 @closing_router.get("", response_model=list[ClosingResponse])
@@ -42,6 +50,58 @@ def list_closings(
     )
 
 
+@closing_router.get(
+    "/summary",
+    response_model=FiscalPeriodSummaryResponse,
+)
+def fiscal_period_summary(
+    session: SessionDep,
+    claims: AdminClaims,
+    period_from: date = Query(alias="from"),
+    period_to: date = Query(alias="to"),
+):
+    return FiscalClosureService(session).get_period_summary(
+        period_from,
+        period_to,
+    )
+
+
+@closing_router.post(
+    "/validate",
+    response_model=ClosureValidationResponse,
+)
+def validate_fiscal_period(
+    payload: ClosurePeriodRequest,
+    session: SessionDep,
+    claims: AdminClaims,
+):
+    return FiscalClosureService(session).validate_period(payload)
+
+
+@closing_router.post(
+    "/declare",
+    response_model=DeclarePeriodResponse,
+)
+def declare_fiscal_period(
+    payload: ClosurePeriodRequest,
+    session: SessionDep,
+    claims: AdminClaims,
+):
+    return FiscalClosureService(session).declare_period(payload)
+
+
+@closing_router.get(
+    "/declarations/{closure_id}",
+    response_model=FiscalClosureResponse,
+)
+def get_fiscal_closure(
+    closure_id: int,
+    session: SessionDep,
+    claims: AdminClaims,
+):
+    return FiscalClosureService(session).get_closure_details(closure_id)
+
+
 @closing_router.get("/{closing_id}", response_model=ClosingResponse)
 def get_closing(
     closing_id: int,
@@ -49,6 +109,18 @@ def get_closing(
     claims: AdminClaims,
 ):
     return ClosingService(session).get_closing(closing_id)
+
+
+@closing_router.post(
+    "/{closing_id}/ticket",
+    response_model=InvoiceResponse,
+)
+def issue_closing_ticket(
+    closing_id: int,
+    session: SessionDep,
+    claims: AuthenticatedClaims,
+):
+    return ClosingService(session).issue_ticket(closing_id)
 
 
 @cash_closing_router.post(

@@ -21,6 +21,7 @@ from users.user_router import user_router
 from auth.bootstrap import initialize_users
 from products.bootstrap import initialize_products
 
+from logging import INFO, WARNING, basicConfig, getLogger
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -30,6 +31,14 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+basicConfig(
+    level=INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    force=True,
+)
+getLogger("pika").setLevel(WARNING)
+
 
 
 origins = [

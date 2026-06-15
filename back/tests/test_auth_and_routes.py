@@ -96,6 +96,14 @@ def _route(path: str, method: str) -> APIRoute:
         ("/auth/register", "POST", is_admin),
         ("/products/create", "POST", is_admin),
         ("/closings", "GET", is_admin),
+        ("/closings/summary", "GET", is_admin),
+        ("/closings/validate", "POST", is_admin),
+        ("/closings/declare", "POST", is_admin),
+        (
+            "/closings/declarations/{closure_id}",
+            "GET",
+            is_admin,
+        ),
         ("/cash-closings", "POST", is_admin),
         ("/cash-closings/{cash_closing_id}", "PATCH", is_admin),
         (
@@ -104,6 +112,7 @@ def _route(path: str, method: str) -> APIRoute:
             is_admin,
         ),
         ("/invoices", "GET", is_admin),
+        ("/invoices/pending-summary", "GET", is_admin),
         ("/invoices/retry-period", "POST", is_admin),
         ("/goals", "GET", is_admin),
         ("/kpis/summary", "GET", is_admin),
@@ -128,6 +137,19 @@ def test_login_is_public():
     }
 
     assert validate_token not in calls
+    assert is_admin not in calls
+
+
+def test_ticket_route_requires_authentication_but_not_admin():
+    calls = {
+        item.call
+        for item in _route(
+            "/closings/{closing_id}/ticket",
+            "POST",
+        ).dependant.dependencies
+    }
+
+    assert validate_token in calls
     assert is_admin not in calls
 
 

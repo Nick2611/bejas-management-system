@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from db.db_models import OpenTableItemModel, OpenTableModel
@@ -54,3 +56,22 @@ class TableRepository(BaseRepository[OpenTableModel]):
             OpenTableItemModel.table_id == table_id,
         )
         return self.session.scalar(statement)
+
+    def get_active_before(
+        self,
+        end: datetime,
+    ) -> list[OpenTableModel]:
+        statement = (
+            select(OpenTableModel)
+            .where(
+                OpenTableModel.deleted_at.is_(None),
+                OpenTableModel.opening_time < end,
+                or_(
+                    OpenTableModel.people > 0,
+                    OpenTableModel.items.any(),
+                ),
+            )
+            .options(selectinload(OpenTableModel.items))
+            .order_by(OpenTableModel.table_number)
+        )
+        return list(self.session.scalars(statement).unique().all())
