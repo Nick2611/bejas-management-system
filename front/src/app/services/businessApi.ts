@@ -379,6 +379,26 @@ export const fetchKpiSummary = () =>
     fallback: 'No se pudieron cargar los indicadores'
   });
 
+export interface DailyKpiPoint {
+  date: string;          // "YYYY-MM-DD"
+  total_sales: number;
+  sales_count: number;
+  total_people: number;
+}
+
+export interface DailySalesHistory {
+  days: DailyKpiPoint[];
+  total_sales: number;
+  max_day: number;
+  avg_per_day: number;
+  active_days: number;
+}
+
+export const fetchSalesHistory = (days = 60) =>
+  apiRequest<DailySalesHistory>(`/kpis/daily-history?days=${days}`, {}, {
+    fallback: 'No se pudo cargar el historial de ventas'
+  });
+
 export async function downloadInvoiceReport(date: string): Promise<void> {
   const report = await apiRequest<unknown>(`/invoices/report?date=${date}`, {}, {
     fallback: 'No se pudo generar el reporte'

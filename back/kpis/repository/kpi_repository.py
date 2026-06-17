@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import Date, cast, func, select
 from sqlalchemy.orm import Session
 
 from db.db_models import ClosingsModel, UserModel
@@ -58,3 +58,22 @@ class KpiRepository:
             for user_id, username, closed_tables, total_sales
             in self.session.execute(statement).all()
         ]
+
+    def daily_history(self, days: int) -> list:
+        cutoff = datetime.now() - timedelta(days=days)
+        day_col = cast(ClosingsModel.closing_time, Date).label("date")
+        statement = (
+            select(
+                day_col,
+                func.coalesce(func.sum(ClosingsModel.total), 0).label("total_sales"),
+                func.count(ClosingsModel.id).label("sales_count"),
+                func.coalesce(func.sum(ClosingsModel.people), 0).label("total_people"),
+            )
+            .where(
+                ClosingsModel.status == "cerrada",
+                ClosingsModel.closing_time >= cutoff,
+            )
+            .group_by(day_col)
+            .order_by(day_col)
+        )
+        return self.session.execute(statement).all()

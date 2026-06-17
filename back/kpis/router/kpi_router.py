@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 
 from auth.auth import is_admin
 from db.db_conn import SessionDep
-from kpis.models.kpi_models import KpiSummaryResponse
+from kpis.models.kpi_models import DailySalesHistory, KpiSummaryResponse
 from kpis.service.kpi_service import KpiService
 
 
@@ -15,3 +15,8 @@ AdminClaims = Annotated[dict, Depends(is_admin)]
 @kpi_router.get("/summary", response_model=KpiSummaryResponse)
 def get_kpi_summary(session: SessionDep, claims: AdminClaims):
     return KpiService(session).summary()
+
+
+@kpi_router.get("/daily-history", response_model=DailySalesHistory)
+def get_daily_history(session: SessionDep, claims: AdminClaims, days: int = 60):
+    return KpiService(session).daily_history(days)
