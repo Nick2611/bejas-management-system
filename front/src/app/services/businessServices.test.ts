@@ -3,12 +3,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createCashClosing,
   createGoal,
+  declareFiscalPeriod,
   fetchCashClosingRevisions,
+  fetchFiscalPeriodSummary,
+  fetchPendingInvoiceSummary,
   retryInvoicePeriod,
   updateCashClosing,
+  validateFiscalPeriod,
 } from './businessApi';
 import { adjustStock } from './stockApi';
-import { closeTable, deleteTable } from './tablesApi';
+import {
+  closeTable,
+  deleteTable,
+  issueClosingTicket,
+} from './tablesApi';
 import { createUser, deleteUser, updateUser } from './usersApi';
 
 
@@ -132,10 +140,9 @@ describe('servicios de negocio', () => {
     const fetchMock = mockJsonResponse({
       status: 'sin_pendientes',
       message: 'Sin pendientes',
-      processed_count: 0,
-      authorized_count: 0,
-      failed_count: 0,
-      invoices: []
+      sales_count: 0,
+      total: 0,
+      invoice: null
     });
 
     await retryInvoicePeriod({
@@ -160,6 +167,64 @@ describe('servicios de negocio', () => {
     });
   });
 
+  it('consulta el resumen pendiente diario y mensual', async () => {
+    const fetchMock = mockJsonResponse({
+      period: 'diario',
+      period_start: '2026-06-09T00:00:00',
+      period_end: '2026-06-10T00:00:00',
+      sales_count: 8,
+      total: 8000,
+      cash_closing_exists: true,
+      can_declare: true,
+      blocking_reason: null
+    });
+
+    await fetchPendingInvoiceSummary({
+      period: 'diario',
+      date: '2026-06-09'
+    });
+    await fetchPendingInvoiceSummary({
+      period: 'mensual',
+      year: 2026,
+      month: 6
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toContain(
+      '/invoices/pending-summary?period=diario&date=2026-06-09'
+    );
+    expect(fetchMock.mock.calls[1][0]).toContain(
+      '/invoices/pending-summary?period=mensual&year=2026&month=6'
+    );
+  });
+
+  it('separa validación, reintento y declaración fiscal', async () => {
+    const fetchMock = mockJsonResponse({
+      can_declare: true,
+      status: 'CLOSURE_READY',
+      summary: {},
+      issues: [],
+      existing_closure_id: null,
+      message: 'Listo'
+    });
+    const period = {
+      periodFrom: '2026-06-01',
+      periodTo: '2026-06-30',
+      periodType: 'MONTH' as const,
+    };
+
+    await fetchFiscalPeriodSummary(period.periodFrom, period.periodTo);
+    await validateFiscalPeriod(period);
+    await declareFiscalPeriod(period);
+
+    expect(fetchMock.mock.calls[0][0]).toContain(
+      '/closings/summary?from=2026-06-01&to=2026-06-30'
+    );
+    expect(fetchMock.mock.calls[1][0]).toContain('/closings/validate');
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual(period);
+    expect(fetchMock.mock.calls[2][0]).toContain('/closings/declare');
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual(period);
+  });
+
   it('envía al cierre sólo los pagos normalizados', async () => {
     const fetchMock = mockJsonResponse({
       closing: {
@@ -168,6 +233,7 @@ describe('servicios de negocio', () => {
         table_name: null,
         opening_time: '2026-06-09T12:00:00',
         closing_time: '2026-06-09T13:00:00',
+        business_date: '2026-06-09',
         people: 2,
         served_by: 1,
         subtotal: 1000,
@@ -191,5 +257,20 @@ describe('servicios de negocio', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       payments: [{ method: 'efectivo', amount: 1000 }]
     });
+  });
+
+  it('declara la factura sólo al solicitar la impresión del ticket', async () => {
+    const fetchMock = mockJsonResponse({
+      id: 4,
+      closing_id: 12,
+      status: 'pendiente'
+    });
+
+    await issueClosingTicket(12);
+
+    expect(fetchMock.mock.calls[0][0]).toContain(
+      '/closings/12/ticket'
+    );
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('POST');
   });
 });

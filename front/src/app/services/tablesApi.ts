@@ -1,5 +1,5 @@
 import { apiRequest } from './apiClient';
-import type { Closing } from './businessApi';
+import type { Closing, Invoice } from './businessApi';
 
 export interface TableItem {
   id: number;
@@ -152,4 +152,12 @@ export async function closeTable(
     method: 'POST',
     body: JSON.stringify({ payments })
   }, { fallback: 'No se pudo cerrar la mesa' });
+}
+
+export async function issueClosingTicket(
+  closingId: number
+): Promise<Invoice> {
+  return apiRequest(`/closings/${closingId}/ticket`, {
+    method: 'POST',
+  }, { fallback: 'No se pudo emitir el ticket' });
 }

@@ -12,19 +12,25 @@ import {
 import { toast } from 'sonner';
 
 import {
+  declareFiscalPeriod,
   createCashClosing,
-  downloadInvoiceReport,
   fetchCashClosingRevisions,
   fetchCashClosings,
   fetchClosings,
+  fetchFiscalPeriodSummary,
   fetchInvoices,
   fetchMonthlySummary,
   retryInvoice,
   retryInvoicePeriod,
   updateCashClosing,
+  validateFiscalPeriod,
   type CashClosing,
   type CashClosingRevision,
+  type ClosureValidation,
   type Closing,
+  type FiscalClosure,
+  type FiscalPeriodSummary,
+  type FiscalPeriodType,
   type Invoice,
   type MonthlySummary,
 } from '../services/businessApi';
@@ -44,6 +50,14 @@ import { Textarea } from './ui/textarea';
 
 const today = () => new Date().toLocaleDateString('en-CA');
 const currentMonth = () => today().slice(0, 7);
+const monthBounds = (value: string) => {
+  const [year, month] = value.split('-').map(Number);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return {
+    from: `${value}-01`,
+    to: `${value}-${String(lastDay).padStart(2, '0')}`,
+  };
+};
 const fieldClassName = (
   'bg-[#0a0a0a] border-2 border-[#5a5a5a] text-[#f5f5dc] '
   + 'focus-visible:border-[#D4AF37] focus-visible:ring-[#D4AF37]/30'
@@ -75,9 +89,22 @@ export function Cierre() {
     null
   );
   const [revisions, setRevisions] = useState<CashClosingRevision[]>([]);
-  const [afipDate, setAfipDate] = useState(today());
-  const [afipMonth, setAfipMonth] = useState(currentMonth());
+  const [periodType, setPeriodType] = useState<FiscalPeriodType>('DAY');
+  const [fiscalDay, setFiscalDay] = useState(today());
+  const [fiscalMonth, setFiscalMonth] = useState(currentMonth());
+  const [customFrom, setCustomFrom] = useState(today());
+  const [customTo, setCustomTo] = useState(today());
   const [processingAfip, setProcessingAfip] = useState(false);
+  const [declaringPeriod, setDeclaringPeriod] = useState(false);
+  const [fiscalSummary, setFiscalSummary] = (
+    useState<FiscalPeriodSummary | null>(null)
+  );
+  const [validation, setValidation] = (
+    useState<ClosureValidation | null>(null)
+  );
+  const [declaredClosure, setDeclaredClosure] = (
+    useState<FiscalClosure | null>(null)
+  );
 
   const load = async () => {
     try {
@@ -101,8 +128,45 @@ export function Cierre() {
     void load();
   }, [summaryMonth]);
 
+  const fiscalRange = useMemo(() => {
+    if (periodType === 'DAY') {
+      return { from: fiscalDay, to: fiscalDay };
+    }
+    if (periodType === 'MONTH') {
+      return monthBounds(fiscalMonth);
+    }
+    return { from: customFrom, to: customTo };
+  }, [periodType, fiscalDay, fiscalMonth, customFrom, customTo]);
+
+  const fiscalRequest = useMemo(() => ({
+    periodFrom: fiscalRange.from,
+    periodTo: fiscalRange.to,
+    periodType,
+  }), [fiscalRange, periodType]);
+
+  const loadFiscalSummary = async () => {
+    if (!fiscalRange.from || !fiscalRange.to) return;
+    try {
+      setFiscalSummary(
+        await fetchFiscalPeriodSummary(fiscalRange.from, fiscalRange.to)
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'No se pudo cargar el resumen fiscal'
+      );
+    }
+  };
+
+  useEffect(() => {
+    setValidation(null);
+    setDeclaredClosure(null);
+    void loadFiscalSummary();
+  }, [fiscalRange.from, fiscalRange.to, periodType]);
+
   const salesToday = useMemo(
-    () => closings.filter(sale => sale.closing_time.slice(0, 10) === today()),
+    () => closings.filter(sale => sale.business_date === today()),
     [closings]
   );
 
@@ -121,7 +185,8 @@ export function Cierre() {
       );
       setCountedCash('');
       setNotes('');
-      await load();
+      setValidation(null);
+      await Promise.all([load(), loadFiscalSummary()]);
       toast.success(
         `Cierre realizado. Diferencia: $${result.difference.toLocaleString('es-AR')}`
       );
@@ -170,66 +235,97 @@ export function Cierre() {
     }
   };
 
-  const showAfipResult = (
-    result: Awaited<ReturnType<typeof retryInvoicePeriod>>
-  ) => {
-    const details = result.processed_count > 0
-      ? ` ${result.authorized_count} autorizada(s), ${result.failed_count} pendiente(s).`
-      : '';
-    if (result.status === 'completado') {
-      toast.success(`${result.message}.${details}`);
-    } else if (
-      result.status === 'parcial'
-      || result.status === 'sin_pendientes'
-    ) {
-      toast.warning(`${result.message}.${details}`);
-    } else {
-      toast.error(`${result.message}.${details}`);
-    }
-  };
-
-  const processAfipDay = async () => {
+  const validatePeriod = async () => {
     setProcessingAfip(true);
     try {
-      const result = await retryInvoicePeriod({
-        period: 'diario',
-        date: afipDate
-      });
-      showAfipResult(result);
-      await load();
+      const result = await validateFiscalPeriod(fiscalRequest);
+      setValidation(result);
+      setFiscalSummary(result.summary);
+      if (result.can_declare) toast.success(result.message);
+      else toast.warning(result.message);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'No se pudo procesar el día');
+      toast.error(
+        error instanceof Error ? error.message : 'No se pudo validar el período'
+      );
     } finally {
       setProcessingAfip(false);
     }
   };
 
-  const processAfipMonth = async () => {
-    const [year, month] = afipMonth.split('-').map(Number);
+  const retryPeriod = async () => {
     setProcessingAfip(true);
     try {
       const result = await retryInvoicePeriod({
-        period: 'mensual',
-        year,
-        month
+        periodFrom: fiscalRange.from,
+        periodTo: fiscalRange.to,
       });
-      showAfipResult(result);
-      await load();
+      if (result.status === 'encolado') toast.success(result.message);
+      else if (result.status === 'sin_pendientes') toast.warning(result.message);
+      else toast.error(result.message);
+      setValidation(null);
+      await Promise.all([load(), loadFiscalSummary()]);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'No se pudo procesar el mes');
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'No se pudieron reintentar los comprobantes'
+      );
     } finally {
       setProcessingAfip(false);
     }
+  };
+
+  const declarePeriod = async () => {
+    setProcessingAfip(true);
+    setDeclaringPeriod(true);
+    try {
+      const [result] = await Promise.all([
+        declareFiscalPeriod(fiscalRequest),
+        new Promise(resolve => window.setTimeout(resolve, 1800)),
+      ]);
+      setDeclaredClosure(result.closure);
+      setValidation(current => current ? {
+        ...current,
+        status: 'CLOSURE_DECLARED',
+        message: result.message,
+      } : current);
+      toast.success(result.message);
+      await Promise.all([load(), loadFiscalSummary()]);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'No se pudo declarar el período'
+      );
+    } finally {
+      setDeclaringPeriod(false);
+      setProcessingAfip(false);
+    }
+  };
+
+  const downloadClosureReport = () => {
+    if (!declaredClosure) return;
+    const blob = new Blob(
+      [JSON.stringify(declaredClosure, null, 2)],
+      { type: 'application/json' }
+    );
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = (
+      `declaracion-fiscal-${declaredClosure.period_from}`
+      + `-${declaredClosure.period_to}.json`
+    );
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const retry = async (invoice: Invoice) => {
     try {
       const result = await retryInvoice(invoice.id);
       await load();
-      if (result.status === 'autorizada') {
+      if (result.status === 'INVOICE_AUTHORIZED') {
         toast.success(`Factura autorizada: ${result.display_number}`);
       } else {
-        toast.warning('AFIP continúa sin responder');
+        toast.success('El comprobante fue encolado para un nuevo intento');
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'No se pudo reintentar');
@@ -238,9 +334,36 @@ export function Cierre() {
 
   return (
     <div className="p-8 space-y-7">
+      {declaringPeriod && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+          role="status"
+          aria-live="polite"
+          aria-label="Comunicando la declaración fiscal con ARCA"
+        >
+          <Card className="w-[min(92vw,430px)] border-[#D4AF37] bg-[#151515]">
+            <CardContent className="flex flex-col items-center gap-4 px-8 py-10 text-center">
+              <RefreshCw className="h-10 w-10 animate-spin text-[#D4AF37]" />
+              <div>
+                <p className="text-lg font-semibold text-[#f5f5dc]">
+                  Comunicando con ARCA
+                </p>
+                <p className="mt-2 text-sm text-[#a0a0a0]">
+                  Estamos validando y registrando la declaración fiscal simulada.
+                </p>
+              </div>
+              <p className="text-xs text-[#D4AF37]">
+                No cierres esta pantalla hasta recibir la confirmación.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
       <div>
         <h1 className="text-[#D4AF37] mb-2">Cierres y Facturación</h1>
-        <p className="text-[#a0a0a0]">Ventas, caja y estado del mock de AFIP</p>
+        <p className="text-[#a0a0a0]">
+          Ventas individuales, conciliación de caja y declaración fiscal
+        </p>
       </div>
 
       <div className="grid md:grid-cols-3 gap-5">
@@ -256,7 +379,12 @@ export function Cierre() {
           <CardContent className="pt-6">
             <p className="text-[#a0a0a0] text-sm">Facturas pendientes</p>
             <p className="text-2xl text-orange-400">
-              {invoices.filter(invoice => invoice.status === 'pendiente').length}
+              {invoices.filter(invoice => [
+                'INVOICE_PENDING',
+                'INVOICE_QUEUED',
+                'INVOICE_AUTHORIZING',
+                'INVOICE_RETRY_PENDING',
+              ].includes(invoice.status)).length}
             </p>
           </CardContent>
         </Card>
@@ -310,78 +438,237 @@ export function Cierre() {
         </TabsContent>
 
         <TabsContent value="facturas" className="mt-5 space-y-4">
-          <div className="grid lg:grid-cols-2 gap-4">
-            <Card className="bg-[#1a1a1a] border-[#3a3a3a]">
-              <CardHeader>
-                <CardTitle className="text-[#D4AF37] text-base">
-                  Facturación diaria
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Input
-                  type="date"
-                  value={afipDate}
-                  onChange={event => setAfipDate(event.target.value)}
-                  className={fieldClassName}
-                />
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    onClick={() => void processAfipDay()}
-                    disabled={processingAfip || !afipDate}
-                    className="bg-[#D4AF37] text-[#0a0a0a]"
+          <Card className="bg-[#1a1a1a] border-[#3a3a3a]">
+            <CardHeader>
+              <CardTitle className="text-[#D4AF37]">
+                Declaración fiscal del período
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="grid md:grid-cols-4 gap-3 items-end">
+                <div className="space-y-2">
+                  <Label className="text-[#f5f5dc]">Tipo de período</Label>
+                  <select
+                    value={periodType}
+                    onChange={event => setPeriodType(
+                      event.target.value as FiscalPeriodType
+                    )}
+                    className={`${fieldClassName} h-10 w-full rounded-md px-3`}
                   >
-                    <Send className="w-4 h-4 mr-2" />
-                    Enviar día a AFIP
-                  </Button>
-                  <Button
-                    onClick={() => void downloadInvoiceReport(afipDate)}
-                    disabled={!afipDate}
-                    variant="outline"
-                    className="border-[#D4AF37] text-[#f5f5dc]"
-                  >
-                    <Download className="w-4 h-4 mr-2" />
-                    Descargar reporte
-                  </Button>
+                    <option value="DAY">Día específico</option>
+                    <option value="MONTH">Mes completo</option>
+                    <option value="CUSTOM">Rango de fechas</option>
+                  </select>
                 </div>
-              </CardContent>
-            </Card>
-            <Card className="bg-[#1a1a1a] border-[#3a3a3a]">
-              <CardHeader>
-                <CardTitle className="text-[#D4AF37] text-base">
-                  Facturación mensual
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Input
-                  type="month"
-                  value={afipMonth}
-                  onChange={event => setAfipMonth(event.target.value)}
-                  className={fieldClassName}
-                />
+                {periodType === 'DAY' && (
+                  <div className="space-y-2 md:col-span-2">
+                    <Label className="text-[#f5f5dc]">Día</Label>
+                    <Input
+                      type="date"
+                      value={fiscalDay}
+                      onChange={event => setFiscalDay(event.target.value)}
+                      className={fieldClassName}
+                    />
+                  </div>
+                )}
+                {periodType === 'MONTH' && (
+                  <div className="space-y-2 md:col-span-2">
+                    <Label className="text-[#f5f5dc]">Mes</Label>
+                    <Input
+                      type="month"
+                      value={fiscalMonth}
+                      onChange={event => setFiscalMonth(event.target.value)}
+                      className={fieldClassName}
+                    />
+                  </div>
+                )}
+                {periodType === 'CUSTOM' && (
+                  <>
+                    <div className="space-y-2">
+                      <Label className="text-[#f5f5dc]">Desde</Label>
+                      <Input
+                        type="date"
+                        value={customFrom}
+                        onChange={event => setCustomFrom(event.target.value)}
+                        className={fieldClassName}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-[#f5f5dc]">Hasta</Label>
+                      <Input
+                        type="date"
+                        value={customTo}
+                        onChange={event => setCustomTo(event.target.value)}
+                        className={fieldClassName}
+                      />
+                    </div>
+                  </>
+                )}
                 <Button
-                  onClick={() => void processAfipMonth()}
-                  disabled={processingAfip || !afipMonth}
+                  onClick={() => void validatePeriod()}
+                  disabled={processingAfip}
+                  variant="outline"
+                  className="border-[#D4AF37] text-[#f5f5dc]"
+                >
+                  <FileText className="w-4 h-4 mr-2" />
+                  Validar período
+                </Button>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  onClick={() => void retryPeriod()}
+                  disabled={processingAfip}
+                  variant="outline"
+                  className="border-orange-400 text-orange-300"
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Reintentar comprobantes pendientes
+                </Button>
+                <Button
+                  onClick={() => void declarePeriod()}
+                  disabled={
+                    processingAfip
+                    || !validation?.can_declare
+                    || validation.status === 'CLOSURE_DECLARED'
+                  }
                   className="bg-[#D4AF37] text-[#0a0a0a]"
                 >
                   <Send className="w-4 h-4 mr-2" />
-                  Enviar mes a AFIP
+                  Declarar período
                 </Button>
+                <Button
+                  onClick={downloadClosureReport}
+                  disabled={!declaredClosure}
+                  variant="outline"
+                  className="border-[#3a3a3a] text-[#f5f5dc]"
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Generar reporte fiscal
+                </Button>
+              </div>
+
+              {validation && (
+                <div className={
+                  `rounded-md border p-3 ${
+                    validation.can_declare
+                      ? 'border-green-700 bg-green-950/20 text-green-300'
+                      : 'border-orange-700 bg-orange-950/20 text-orange-300'
+                  }`
+                }>
+                  {validation.message}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {fiscalSummary && (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {[
+                ['Ventas', fiscalSummary.sales_count],
+                ['Total vendido', `$${fiscalSummary.total_sales_amount.toLocaleString('es-AR')}`],
+                ['Facturas', fiscalSummary.invoices_count],
+                ['Autorizadas', fiscalSummary.authorized_invoices_count],
+                ['Pendientes', fiscalSummary.pending_invoices_count],
+                ['Rechazadas', fiscalSummary.rejected_invoices_count],
+                ['Ventas sin factura', fiscalSummary.sales_without_invoice_count],
+                ['Total autorizado', `$${fiscalSummary.total_authorized_amount.toLocaleString('es-AR')}`],
+                ['Total pendiente', `$${fiscalSummary.total_pending_amount.toLocaleString('es-AR')}`],
+                ['Total rechazado', `$${fiscalSummary.total_rejected_amount.toLocaleString('es-AR')}`],
+              ].map(([label, value]) => (
+                <Card
+                  key={String(label)}
+                  className="bg-[#1a1a1a] border-[#3a3a3a]"
+                >
+                  <CardContent className="pt-5">
+                    <p className="text-xs text-[#a0a0a0]">{label}</p>
+                    <p className="text-xl text-[#f5f5dc]">{value}</p>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+
+          {validation && validation.issues.length > 0 && (
+            <Card className="bg-[#1a1a1a] border-[#3a3a3a]">
+              <CardHeader>
+                <CardTitle className="text-orange-300">
+                  Inconsistencias detectadas
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {validation.issues.map((issue, index) => (
+                  <div
+                    key={`${issue.issue_type}-${issue.invoice_id}-${index}`}
+                    className="rounded-md border border-[#3a3a3a] p-3"
+                  >
+                    <div className="flex flex-wrap justify-between gap-2">
+                      <p className="font-semibold text-[#f5f5dc]">
+                        {issue.issue_type}
+                      </p>
+                      <span className={
+                        issue.severity === 'BLOCKING'
+                          ? 'text-red-400'
+                          : 'text-yellow-400'
+                      }>
+                        {issue.severity}
+                      </span>
+                    </div>
+                    <p className="text-sm text-[#d0d0d0]">
+                      {issue.description}
+                    </p>
+                    <p className="text-xs text-[#a0a0a0] mt-1">
+                      Venta: {issue.sale_id ?? '-'} · Factura:{' '}
+                      {issue.invoice_id ?? '-'}
+                    </p>
+                    <p className="text-xs text-[#D4AF37] mt-1">
+                      Acción sugerida: {issue.suggested_action}
+                    </p>
+                  </div>
+                ))}
               </CardContent>
             </Card>
-          </div>
+          )}
+
           {invoices.map(invoice => (
             <Card key={invoice.id} className="bg-[#1a1a1a] border-[#3a3a3a]">
               <CardContent className="pt-6 flex justify-between items-center">
                 <div>
                   <p className="text-[#f5f5dc]">{invoice.display_number}</p>
-                  <p className={invoice.status === 'autorizada' ? 'text-green-500' : 'text-orange-400'}>
+                  <p className="text-sm text-[#D4AF37]">
+                    {invoice.declaration_type === 'ticket'
+                      ? 'Ticket individual'
+                      : 'Factura histórica'}
+                  </p>
+                  <p className="text-xs text-[#a0a0a0]">
+                    {invoice.sales_count} venta(s) ·{' '}
+                    ${invoice.total.toLocaleString('es-AR')}
+                  </p>
+                  <p className={
+                    invoice.status === 'INVOICE_AUTHORIZED'
+                      ? 'text-green-500'
+                      : invoice.status === 'INVOICE_REJECTED'
+                        ? 'text-red-400'
+                        : 'text-orange-400'
+                  }>
                     {invoice.status}
                   </p>
-                  {invoice.attempts.at(-1)?.error && (
-                    <p className="text-xs text-red-400">{invoice.attempts.at(-1)?.error}</p>
+                  {invoice.authorization_code && (
+                    <p className="text-xs text-green-400">
+                      CAE: {invoice.authorization_code}
+                    </p>
+                  )}
+                  {invoice.rejection_reason && (
+                    <p className="text-xs text-red-400">
+                      {invoice.rejection_reason}
+                    </p>
                   )}
                 </div>
-                {invoice.status === 'pendiente' && (
+                {[
+                  'INVOICE_PENDING',
+                  'INVOICE_REJECTED',
+                  'INVOICE_RETRY_PENDING',
+                ].includes(invoice.status) && (
                   <Button onClick={() => void retry(invoice)} variant="outline">
                     <RefreshCw className="w-4 h-4 mr-2" /> Reintentar
                   </Button>

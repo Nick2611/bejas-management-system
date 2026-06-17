@@ -3,22 +3,53 @@ import type { PaymentMethod } from './tablesApi';
 
 export interface InvoiceAttempt {
   id: number;
+  invoice_id: number;
+  attempt_number: number;
   attempted_at: string;
+  previous_status: string;
+  new_status: string;
+  request_payload: Record<string, unknown> | null;
+  response_payload: Record<string, unknown> | null;
+  error_reason: string | null;
+  worker_id: string | null;
+  correlation_id: string | null;
   success: boolean;
   error: string | null;
 }
 
+export type InvoiceStatus =
+  | 'INVOICE_PENDING'
+  | 'INVOICE_QUEUED'
+  | 'INVOICE_AUTHORIZING'
+  | 'INVOICE_AUTHORIZED'
+  | 'INVOICE_REJECTED'
+  | 'INVOICE_CANCELLED'
+  | 'INVOICE_RETRY_PENDING';
+
 export interface Invoice {
   id: number;
-  closing_id: number;
+  closing_id: number | null;
+  closing_ids: number[];
   voucher_type: string;
   point_of_sale: number;
   voucher_number: number;
   display_number: string;
   issued_at: string;
+  declaration_type: 'ticket' | 'diario' | 'mensual' | 'legacy';
+  total: number;
+  sales_count: number;
+  period_start: string | null;
+  period_end: string | null;
   cae: string | null;
   cae_expiration: string | null;
-  status: 'pendiente' | 'autorizada' | 'rechazada' | 'anulada';
+  authorization_code: string | null;
+  authorization_date: string | null;
+  rejection_reason: string | null;
+  fiscal_payload_json: Record<string, unknown> | null;
+  arca_response_json: Record<string, unknown> | null;
+  status: InvoiceStatus;
+  created_at: string;
+  updated_at: string;
   attempts: InvoiceAttempt[];
 }
 
@@ -39,6 +70,7 @@ export interface Closing {
   table_name: string | null;
   opening_time: string;
   closing_time: string;
+  business_date: string;
   people: number;
   served_by: number;
   subtotal: number;
@@ -47,6 +79,7 @@ export interface Closing {
   amount_received: number;
   change: number;
   status: string;
+  invoicing_status: string;
   cash_closing_id: number | null;
   items: ClosingItem[];
   payments: Array<{ id: number; method: PaymentMethod; amount: number }>;
@@ -82,12 +115,96 @@ export interface CashClosingRevision {
 }
 
 export interface RetryInvoicePeriodResponse {
-  status: 'completado' | 'parcial' | 'error' | 'sin_pendientes';
+  status: 'encolado' | 'error' | 'sin_pendientes';
   message: string;
-  processed_count: number;
-  authorized_count: number;
-  failed_count: number;
+  queued_count: number;
+  published_count: number;
+  invoice_ids: number[];
   invoices: Invoice[];
+  sales_count: number;
+  total: number;
+  invoice: Invoice | null;
+}
+
+export type FiscalPeriodType = 'DAY' | 'MONTH' | 'CUSTOM';
+
+export interface FiscalPeriodRequest {
+  periodFrom: string;
+  periodTo: string;
+  periodType: FiscalPeriodType;
+}
+
+export interface FiscalPeriodSummary {
+  period_from: string;
+  period_to: string;
+  sales_count: number;
+  total_sales_amount: number;
+  invoices_count: number;
+  authorized_invoices_count: number;
+  pending_invoices_count: number;
+  rejected_invoices_count: number;
+  sales_without_invoice_count: number;
+  total_authorized_amount: number;
+  total_pending_amount: number;
+  total_rejected_amount: number;
+}
+
+export interface ClosureValidationIssue {
+  issue_type: string;
+  severity: 'BLOCKING' | 'WARNING';
+  sale_id: number | null;
+  invoice_id: number | null;
+  description: string;
+  suggested_action: string;
+}
+
+export interface ClosureValidation {
+  can_declare: boolean;
+  status: 'CLOSURE_BLOCKED' | 'CLOSURE_READY' | 'CLOSURE_DECLARED';
+  summary: FiscalPeriodSummary;
+  issues: ClosureValidationIssue[];
+  existing_closure_id: number | null;
+  message: string;
+}
+
+export interface FiscalClosure {
+  id: number;
+  period_type: FiscalPeriodType;
+  period_from: string;
+  period_to: string;
+  status: string;
+  total_sales_amount: number;
+  total_authorized_amount: number;
+  total_pending_amount: number;
+  total_rejected_amount: number;
+  sales_count: number;
+  invoices_count: number;
+  authorized_invoices_count: number;
+  pending_invoices_count: number;
+  rejected_invoices_count: number;
+  sales_without_invoice_count: number;
+  declared_at: string | null;
+  created_at: string;
+  updated_at: string;
+  invoices: Invoice[];
+  issues: ClosureValidationIssue[];
+}
+
+export interface DeclareFiscalPeriodResponse {
+  closure: FiscalClosure;
+  already_declared: boolean;
+  message: string;
+}
+
+export interface PendingInvoiceSummary {
+  period: 'diario' | 'mensual';
+  period_start: string;
+  period_end: string;
+  sales_count: number;
+  total: number;
+  cash_closing_exists: boolean;
+  can_declare: boolean;
+  blocking_reason: string | null;
 }
 
 export interface MonthlySummary {
@@ -177,10 +294,55 @@ export const retryInvoicePeriod = (
   payload:
     | { period: 'diario'; date: string }
     | { period: 'mensual'; year: number; month: number }
+    | {
+      periodFrom: string;
+      periodTo: string;
+      statuses?: Array<
+        'INVOICE_PENDING'
+        | 'INVOICE_REJECTED'
+        | 'INVOICE_RETRY_PENDING'
+      >;
+    }
 ) => apiRequest<RetryInvoicePeriodResponse>('/invoices/retry-period', {
   method: 'POST',
   body: JSON.stringify(payload)
-}, { fallback: 'No se pudo procesar el período en AFIP' });
+}, { fallback: 'No se pudieron reintentar los comprobantes del período' });
+
+export const fetchPendingInvoiceSummary = (
+  payload:
+    | { period: 'diario'; date: string }
+    | { period: 'mensual'; year: number; month: number }
+) => {
+  const query = payload.period === 'diario'
+    ? `period=diario&date=${encodeURIComponent(payload.date)}`
+    : `period=mensual&year=${payload.year}&month=${payload.month}`;
+  return apiRequest<PendingInvoiceSummary>(
+    `/invoices/pending-summary?${query}`,
+    {},
+    { fallback: 'No se pudo cargar el resumen pendiente de AFIP' }
+  );
+};
+
+export const fetchFiscalPeriodSummary = (
+  periodFrom: string,
+  periodTo: string
+) => apiRequest<FiscalPeriodSummary>(
+  `/closings/summary?from=${encodeURIComponent(periodFrom)}&to=${encodeURIComponent(periodTo)}`,
+  {},
+  { fallback: 'No se pudo cargar el resumen fiscal' }
+);
+
+export const validateFiscalPeriod = (payload: FiscalPeriodRequest) =>
+  apiRequest<ClosureValidation>('/closings/validate', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }, { fallback: 'No se pudo validar el período' });
+
+export const declareFiscalPeriod = (payload: FiscalPeriodRequest) =>
+  apiRequest<DeclareFiscalPeriodResponse>('/closings/declare', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }, { fallback: 'No se pudo declarar el período' });
 
 export const fetchMonthlySummary = (year: number, month: number) =>
   apiRequest<MonthlySummary>(

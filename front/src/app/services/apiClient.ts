@@ -1,5 +1,8 @@
 interface ApiError {
-  detail?: string | Array<{ msg?: string }>;
+  detail?:
+    | string
+    | Array<{ msg?: string }>
+    | { message?: string; code?: string };
   message?: string;
 }
 
@@ -17,7 +20,9 @@ export function getApiErrorMessage(
   const error = payload as ApiError | null;
   const detail = Array.isArray(error?.detail)
     ? error.detail.map(item => item.msg).filter(Boolean).join('. ')
-    : error?.detail;
+    : typeof error?.detail === 'object'
+      ? error.detail.message
+      : error?.detail;
 
   return detail || error?.message || `${fallback} (HTTP ${status})`;
 }

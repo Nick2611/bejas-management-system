@@ -16,6 +16,27 @@ services:
       timeout: 5s
       retries: 5
 
+  rabbit:
+    image: rabbitmq:management-alpine
+    container_name: rabbitmq-queue
+    hostname: rabbit-bejas
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: bejas
+      RABBITMQ_DEFAULT_PASS: admin
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   back:
     build:
       context: ./back
@@ -27,10 +48,16 @@ services:
       CORS_ORIGINS: http://localhost:5173
       BOOTSTRAP_ADMIN_USERNAME: admin
       BOOTSTRAP_ADMIN_PASSWORD: admin
-      AFIP_MOCK_SUCCESS_RATE: "0.50"
+      AFIP_MOCK_SUCCESS_RATE: "0.9"
+      RABBIT_HOST: rabbit
+      RABBIT_PORT: "5672"
+      RABBIT_USER: bejas
+      RABBIT_PASS: admin
       TZ: America/Argentina/Buenos_Aires
     depends_on:
       postgres:
+        condition: service_healthy
+      rabbit:
         condition: service_healthy
     healthcheck:
       test:
@@ -41,6 +68,29 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  afip-worker:
+    build:
+      context: ./back
+    container_name: bejas-afip-worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg2://bejas:admin@postgres:5432/bejas-db
+      AFIP_MOCK_SUCCESS_RATE: "0.9"
+      RABBIT_HOST: rabbit
+      RABBIT_PORT: "5672"
+      RABBIT_USER: bejas
+      RABBIT_PASS: admin
+      TZ: America/Argentina/Buenos_Aires
+    depends_on:
+      back:
+        condition: service_healthy
+      rabbit:
+        condition: service_healthy
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - rabbitmq.worker
 
   front:
     build:
@@ -97,3 +147,4 @@ services:
 
 volumes:
   postgres-data:
+  rabbit-data:

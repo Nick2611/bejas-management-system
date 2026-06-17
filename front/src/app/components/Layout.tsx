@@ -2,7 +2,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router';
 import { useAuth } from '../context/AuthContext';
 import { Button } from './ui/button';
 import { LogOut, TableProperties, Beer, FileText, BarChart, UtensilsCrossed, Target } from 'lucide-react';
-import logo from 'figma:asset/3ff1d6d16d7d52145a898cdfc527422ef88cd4c9.png';
+import logo from '../../assets/bejas_logo.png';
 
 export function Layout() {
   const { user, logout, isAdmin } = useAuth();
@@ -28,7 +28,14 @@ export function Layout() {
       {/* Sidebar */}
       <div className="w-64 bg-[#1a1a1a] border-r border-[#3a3a3a] flex flex-col">
         <div className="p-6 border-b border-[#3a3a3a]">
-          <img src={logo} alt="Bejas Logo" className="w-32 h-32 mx-auto object-contain" />
+          <div className="relative mx-auto h-36 w-36">
+            <div className="absolute inset-5 rounded-full bg-amber-400/15 blur-2xl" />
+            <img
+              src={logo}
+              alt="Estación de Cervezas Bejas"
+              className="relative h-full w-full rounded-full object-contain drop-shadow-[0_12px_22px_rgba(0,0,0,0.45)]"
+            />
+          </div>
           <div className="mt-4 text-center">
             <p className="text-[#D4AF37]">{user?.username}</p>
             <p className="text-xs text-[#a0a0a0] capitalize">{user?.role}</p>

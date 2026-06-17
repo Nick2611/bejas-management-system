@@ -13,6 +13,7 @@ import type {
   CloseTableResponse,
   PaymentMethod,
 } from '../services/tablesApi';
+import { issueClosingTicket } from '../services/tablesApi';
 import { Button } from './ui/button';
 import { Checkbox } from './ui/checkbox';
 import {
@@ -99,6 +100,7 @@ export function PreCierreMesa({
     useState<CloseTableResponse | null>(null);
   const [itemEliminando, setItemEliminando] = useState<string | null>(null);
   const [cerrando, setCerrando] = useState(false);
+  const [imprimiendo, setImprimiendo] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -204,9 +206,33 @@ export function PreCierreMesa({
     }
   };
 
-  const imprimirTicket = () => {
-    window.print();
-    toast.success('Ticket enviado a impresión');
+  const imprimirTicket = async () => {
+    if (!cierreCompletado) return;
+    setImprimiendo(true);
+    try {
+      const invoice = await issueClosingTicket(
+        cierreCompletado.closing.id
+      );
+      setCierreCompletado(actual => actual ? {
+        ...actual,
+        closing: {
+          ...actual.closing,
+          invoice,
+        },
+      } : actual);
+      window.setTimeout(() => window.print(), 0);
+      toast.success(
+        'Ticket enviado a impresión; la factura ya está en proceso fiscal'
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'No se pudo emitir el ticket'
+      );
+    } finally {
+      setImprimiendo(false);
+    }
   };
 
   const handleConfirmarCierre = () => {
@@ -329,11 +355,12 @@ export function PreCierreMesa({
                 Cerrar
               </Button>
               <Button
-                onClick={imprimirTicket}
+                onClick={() => void imprimirTicket()}
+                disabled={imprimiendo}
                 className="bg-[#D4AF37] hover:bg-[#B8860B] text-[#0a0a0a]"
               >
                 <Printer className="w-4 h-4 mr-2" />
-                Imprimir ticket
+                {imprimiendo ? 'Emitiendo...' : 'Imprimir ticket'}
               </Button>
             </div>
           </div>
