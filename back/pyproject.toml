@@ -16,6 +16,8 @@ dependencies = [
     "slowapi>=0.1.9",
     "sqlalchemy>=2.0.50",
     "sqlmodel>=0.0.38",
+    "reportlab>=4.0",
+    "qrcode[pil]>=7.4",
 ]
 
 [dependency-groups]

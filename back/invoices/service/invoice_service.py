@@ -82,7 +82,7 @@ LEGACY_STATUS_MAP = {
 
 class InvoiceService:
     POINT_OF_SALE = 1
-    VOUCHER_TYPE = "Factura B"
+    VOUCHER_TYPE = "C"
     CUIT = "20-12345678-9"
     BUSINESS_NAME = "Estación de Cervezas Bejas"
     MESSAGE_SOURCES = INVOICE_MESSAGE_SOURCES
@@ -621,6 +621,44 @@ class InvoiceService:
                 detail="Factura no encontrada",
             )
         return self._response(invoice)
+
+    def get_for_pdf(self, invoice_id: int) -> "InvoiceModel":
+        """Devuelve el InvoiceModel si está autorizado; lanza HTTPException para cualquier otro estado."""
+        invoice = self.repository.get_by_id(invoice_id)
+        if invoice is None:
+            raise HTTPException(
+                status_code=HTTPStatus.NOT_FOUND,
+                detail="Factura no encontrada",
+            )
+        status = self._normalized_status(invoice.status)
+        if status == INVOICE_AUTHORIZED:
+            return invoice
+        if status in PENDING_INVOICE_STATUSES:
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail={
+                    "status": "pending",
+                    "invoice_status": status,
+                    "message": "El comprobante aún no fue autorizado por AFIP",
+                },
+            )
+        if status == INVOICE_REJECTED:
+            raise HTTPException(
+                status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
+                detail={
+                    "status": "rejected",
+                    "invoice_status": status,
+                    "message": invoice.rejection_reason or "Comprobante rechazado por AFIP",
+                },
+            )
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail={
+                "status": "cancelled",
+                "invoice_status": status,
+                "message": "El comprobante fue cancelado y no puede generarse",
+            },
+        )
 
     def retry(self, invoice_id: int) -> InvoiceResponse:
         invoice = self.repository.get_by_id_for_update(invoice_id)

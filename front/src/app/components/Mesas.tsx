@@ -424,27 +424,27 @@ export function Mesas() {
   const renderMesaCard = (mesa: Mesa) => (
     <div
       key={mesa.id}
-      className={`rounded-2xl border-2 p-5 transition-all duration-200 ${
+      className={`rounded-2xl border-2 p-6 transition-all duration-200 ${
         mesa.estado === 'ocupada'
           ? 'bg-[#17130a] border-amber-500/35 shadow-[0_0_24px_rgba(245,158,11,0.06)]'
           : 'bg-[#111111] border-white/[0.08] hover:border-white/[0.14]'
       }`}
     >
       {/* Card header */}
-      <div className="flex items-start justify-between mb-4">
+      <div className="flex items-start justify-between mb-5">
         <div>
-          <h3 className="font-semibold text-zinc-200 text-sm">
+          <h3 className="font-semibold text-zinc-200 text-base">
             {mesa.nombrePersonalizado || `Mesa ${mesa.numero}`}
           </h3>
-          <div className="mt-1.5">
+          <div className="mt-2">
             {mesa.estado === 'ocupada' ? (
-              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-400">
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-400">
+                <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
                 Ocupada
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-400">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
                 Disponible
               </span>
             )}
@@ -455,10 +455,10 @@ export function Mesas() {
             <button
               type="button"
               onClick={() => editarMesa(mesa)}
-              className="rounded-lg p-1.5 text-zinc-600 hover:text-amber-400 hover:bg-amber-400/10 transition-all"
+              className="rounded-lg p-2 text-zinc-600 hover:text-amber-400 hover:bg-amber-400/10 transition-all"
               title="Editar mesa"
             >
-              <Edit className="h-3.5 w-3.5" />
+              <Edit className="h-4 w-4" />
             </button>
           )}
           {mesa.estado === 'libre' && (
@@ -466,10 +466,10 @@ export function Mesas() {
               type="button"
               onClick={() => void eliminarMesa(mesa)}
               disabled={procesandoMesa}
-              className="rounded-lg p-1.5 text-zinc-700 hover:text-red-400 hover:bg-red-950/30 transition-all disabled:opacity-40"
+              className="rounded-lg p-2 text-zinc-700 hover:text-red-400 hover:bg-red-950/30 transition-all disabled:opacity-40"
               title="Eliminar mesa"
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              <Trash2 className="h-4 w-4" />
             </button>
           )}
         </div>
@@ -477,10 +477,10 @@ export function Mesas() {
 
       {/* Ocupada: detalles */}
       {mesa.estado === 'ocupada' && (
-        <div className="space-y-2.5 mb-4 p-3 rounded-xl bg-white/[0.03] border border-white/[0.05]">
-          <div className="flex items-center justify-between text-xs">
-            <span className="flex items-center gap-1.5 text-zinc-500">
-              <Users className="h-3.5 w-3.5" /> Personas
+        <div className="space-y-3 mb-5 p-4 rounded-xl bg-white/[0.03] border border-white/[0.05]">
+          <div className="flex items-center justify-between text-sm">
+            <span className="flex items-center gap-2 text-zinc-500">
+              <Users className="h-4 w-4" /> Personas
             </span>
             <div className="flex items-center gap-2">
               <span className="text-zinc-300 font-medium">{mesa.personas}</span>
@@ -488,16 +488,16 @@ export function Mesas() {
                 <button
                   type="button"
                   onClick={() => abrirQuitarPersonas(mesa)}
-                  className="text-red-400/70 hover:text-red-400 transition-colors text-[11px]"
+                  className="text-red-400/70 hover:text-red-400 transition-colors text-xs"
                 >
                   Quitar
                 </button>
               )}
             </div>
           </div>
-          <div className="flex items-center justify-between text-xs">
-            <span className="flex items-center gap-1.5 text-zinc-500">
-              <Clock className="h-3.5 w-3.5" /> Desde
+          <div className="flex items-center justify-between text-sm">
+            <span className="flex items-center gap-2 text-zinc-500">
+              <Clock className="h-4 w-4" /> Desde
             </span>
             <span className="text-zinc-400 font-mono">
               {mesa.horaInicio
@@ -505,9 +505,9 @@ export function Mesas() {
                 : '-'}
             </span>
           </div>
-          <div className="flex items-center justify-between text-xs">
-            <span className="flex items-center gap-1.5 text-zinc-500">
-              <DollarSign className="h-3.5 w-3.5" /> Total
+          <div className="flex items-center justify-between text-sm">
+            <span className="flex items-center gap-2 text-zinc-500">
+              <DollarSign className="h-4 w-4" /> Total
             </span>
             <span className="font-semibold text-amber-400">${mesa.consumo.toLocaleString('es-AR')}</span>
           </div>
@@ -520,23 +520,23 @@ export function Mesas() {
           <button
             type="button"
             onClick={() => { setSelectedMesaId(mesa.id); setPedido([]); setConsumoDialogOpen(true); }}
-            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-white/[0.04] border border-white/[0.09] text-zinc-400 hover:text-zinc-200 hover:border-white/[0.16] transition-all"
+            className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium bg-white/[0.04] border border-white/[0.09] text-zinc-400 hover:text-zinc-200 hover:border-white/[0.16] transition-all"
           >
-            <Plus className="h-3.5 w-3.5" /> Pedido
+            <Plus className="h-4 w-4" /> Pedido
           </button>
           <button
             type="button"
             onClick={() => void abrirPreCierre(mesa.id)}
-            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-amber-500 to-amber-600 text-[#0a0a0a] hover:from-amber-400 hover:to-amber-500 transition-all"
+            className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-amber-500 to-amber-600 text-[#0a0a0a] hover:from-amber-400 hover:to-amber-500 transition-all"
           >
-            <CheckCircle2 className="h-3.5 w-3.5" /> Detalle
+            <CheckCircle2 className="h-4 w-4" /> Detalle
           </button>
         </div>
       ) : (
         <button
           type="button"
           onClick={() => abrirOcuparMesa(mesa.id)}
-          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500/[0.12] border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/[0.18] hover:border-emerald-500/40 transition-all"
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold bg-emerald-500/[0.12] border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/[0.18] hover:border-emerald-500/40 transition-all"
         >
           <Users className="h-4 w-4" /> Ocupar Mesa
         </button>

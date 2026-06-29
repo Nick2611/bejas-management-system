@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react';
 import {
   Banknote,
   CreditCard,
+  FileText,
+  Loader2,
   Printer,
   Smartphone,
   Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useComprobanteAfip } from '../hooks/useComprobanteAfip';
 
 import type { ProductType } from '../services/productsApi';
 import type {
@@ -100,7 +103,9 @@ export function PreCierreMesa({
     useState<CloseTableResponse | null>(null);
   const [itemEliminando, setItemEliminando] = useState<string | null>(null);
   const [cerrando, setCerrando] = useState(false);
-  const [imprimiendo, setImprimiendo] = useState(false);
+  const [issuingTicket, setIssuingTicket] = useState(false);
+
+  const { polling: pollingAfip, timedOut: afipTimedOut, descargar: descargarAfip, reintentar: reintentarAfip, stopPolling: stopAfip } = useComprobanteAfip();
 
   useEffect(() => {
     if (!open) return;
@@ -206,33 +211,31 @@ export function PreCierreMesa({
     }
   };
 
-  const imprimirTicket = async () => {
+  const imprimirTicket = () => {
+    window.print();
+  };
+
+  const handleDescargarAfip = async () => {
     if (!cierreCompletado) return;
-    setImprimiendo(true);
-    try {
-      const invoice = await issueClosingTicket(
-        cierreCompletado.closing.id
-      );
-      setCierreCompletado(actual => actual ? {
-        ...actual,
-        closing: {
-          ...actual.closing,
-          invoice,
-        },
-      } : actual);
-      window.setTimeout(() => window.print(), 0);
-      toast.success(
-        'Ticket enviado a impresión; la factura ya está en proceso fiscal'
-      );
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : 'No se pudo emitir el ticket'
-      );
-    } finally {
-      setImprimiendo(false);
+    let invoiceId = cierreCompletado.closing.invoice?.id;
+    if (!invoiceId) {
+      setIssuingTicket(true);
+      try {
+        const invoice = await issueClosingTicket(cierreCompletado.closing.id);
+        setCierreCompletado(actual => actual
+          ? { ...actual, closing: { ...actual.closing, invoice } }
+          : actual);
+        invoiceId = invoice.id;
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : 'No se pudo emitir el comprobante fiscal'
+        );
+        return;
+      } finally {
+        setIssuingTicket(false);
+      }
     }
+    descargarAfip(invoiceId);
   };
 
   const handleConfirmarCierre = () => {
@@ -279,7 +282,7 @@ export function PreCierreMesa({
     }
   };
 
-  const cerrarResultado = () => onOpenChange(false);
+  const cerrarResultado = () => { stopAfip(); onOpenChange(false); };
 
   const metodosDisponibles = [
     {
@@ -316,7 +319,7 @@ export function PreCierreMesa({
           <DialogHeader>
             <DialogTitle className="text-[#D4AF37]">Mesa cerrada</DialogTitle>
             <DialogDescription className="text-[#a0a0a0]">
-              La venta ya quedó persistida. Podés imprimir el ticket ahora.
+              La venta quedó registrada.
             </DialogDescription>
           </DialogHeader>
 
@@ -346,64 +349,56 @@ export function PreCierreMesa({
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <Button
-                onClick={cerrarResultado}
-                variant="outline"
-                className="border-[#3a3a3a] text-[#f5f5dc] hover:bg-[#3a3a3a]"
-              >
-                Cerrar
-              </Button>
-              <Button
-                onClick={() => void imprimirTicket()}
-                disabled={imprimiendo}
-                className="bg-[#D4AF37] hover:bg-[#B8860B] text-[#0a0a0a]"
-              >
-                <Printer className="w-4 h-4 mr-2" />
-                {imprimiendo ? 'Emitiendo...' : 'Imprimir ticket'}
-              </Button>
+            <Button
+              onClick={cerrarResultado}
+              variant="outline"
+              className="w-full border-[#3a3a3a] text-[#f5f5dc] hover:bg-[#3a3a3a]"
+            >
+              Cerrar
+            </Button>
+
+            <div className="space-y-2">
+              {afipTimedOut ? (
+                <>
+                  <p className="text-xs text-orange-400 text-center">
+                    El comprobante está demorando más de lo normal. Reintentá en unos segundos.
+                  </p>
+                  <Button
+                    onClick={() => void handleDescargarAfip()}
+                    variant="outline"
+                    className="w-full border-[#D4AF37] text-[#D4AF37] hover:bg-[#D4AF37]/10"
+                  >
+                    <FileText className="w-4 h-4 mr-2" />
+                    Reintentar comprobante AFIP
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  onClick={() => void handleDescargarAfip()}
+                  disabled={issuingTicket || pollingAfip}
+                  className="w-full bg-[#0d2d0d] hover:bg-[#113511] border border-[#2a6a2a] text-green-400 disabled:opacity-60"
+                >
+                  {issuingTicket ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Emitiendo comprobante...
+                    </>
+                  ) : pollingAfip ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Generando comprobante...
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="w-4 h-4 mr-2" />
+                      {closing.invoice ? 'Ver comprobante AFIP' : 'Generar comprobante AFIP'}
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
           </div>
 
-          <div className="print-ticket">
-            <h1>BEJAS - CERVECERÍA</h1>
-            <p>{closing.table_name || `Mesa ${closing.table_number}`}</p>
-            <p>{new Date(closing.closing_time).toLocaleString('es-AR')}</p>
-            <hr />
-            <h2>Detalle</h2>
-            {closing.items.length === 0 ? (
-              <p>Sin consumos</p>
-            ) : closing.items.map(item => (
-              <p key={item.id}>
-                {item.product_name}: {item.quantity} x $
-                {item.unit_price.toLocaleString('es-AR')} = $
-                {item.subtotal.toLocaleString('es-AR')}
-              </p>
-            ))}
-            <hr />
-            <p>Subtotal: ${closing.subtotal.toLocaleString('es-AR')}</p>
-            {closing.discount > 0 && (
-              <p>Descuento: -${closing.discount.toLocaleString('es-AR')}</p>
-            )}
-            <strong>Total: ${closing.total.toLocaleString('es-AR')}</strong>
-            {closing.payments.map(payment => (
-              <p key={payment.id}>
-                {payment.method.replaceAll('_', ' ')}: $
-                {payment.amount.toLocaleString('es-AR')}
-              </p>
-            ))}
-            <p>Recibido: ${closing.amount_received.toLocaleString('es-AR')}</p>
-            <p>Vuelto: ${closing.change.toLocaleString('es-AR')}</p>
-            {closing.invoice && (
-              <>
-                <hr />
-                <p>Comprobante: {closing.invoice.display_number}</p>
-                {closing.invoice.cae && <p>CAE: {closing.invoice.cae}</p>}
-              </>
-            )}
-            <hr />
-            <p>Gracias por su visita</p>
-          </div>
         </DialogContent>
       </Dialog>
     );
@@ -468,6 +463,7 @@ export function PreCierreMesa({
   }
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="bg-[#1a1a1a] border-[#3a3a3a] max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
@@ -624,15 +620,77 @@ export function PreCierreMesa({
             </div>
           </div>
 
-          <Button
-            onClick={handleConfirmarCierre}
-            disabled={!onConfirmarCierre}
-            className="w-full bg-[#D4AF37] hover:bg-[#B8860B] text-[#0a0a0a]"
-          >
-            Continuar al Cierre
-          </Button>
+          <div className="grid grid-cols-2 gap-3">
+            <Button
+              onClick={imprimirTicket}
+              variant="outline"
+              className="border-[#3a3a3a] text-[#f5f5dc] hover:bg-[#3a3a3a]"
+            >
+              <Printer className="w-4 h-4 mr-2" />
+              Imprimir resumen
+            </Button>
+            <Button
+              onClick={handleConfirmarCierre}
+              disabled={!onConfirmarCierre}
+              className="bg-[#D4AF37] hover:bg-[#B8860B] text-[#0a0a0a]"
+            >
+              Continuar al Cierre
+            </Button>
+          </div>
         </div>
+
       </DialogContent>
     </Dialog>
+
+    <div className="print-ticket">
+      <h1>BEJAS - CERVECERÍA</h1>
+      <p>{mesa.nombrePersonalizado || `Mesa ${mesa.numero}`}</p>
+      <p>{new Date().toLocaleString('es-AR')}</p>
+      <hr />
+      <h2>Detalle</h2>
+      {detalles.length === 0 ? (
+        <p>Sin consumos</p>
+      ) : detalles.map(item => (
+        <div key={item.itemId} className="ticket-row">
+          <span className="ticket-row-name">
+            {item.nombre} ({item.cantidad}x)
+          </span>
+          <span className="ticket-row-price">
+            ${item.subtotal.toLocaleString('es-AR')}
+          </span>
+        </div>
+      ))}
+      <hr />
+      <div className="ticket-row">
+        <span>Subtotal</span>
+        <span>${calcularSubtotal().toLocaleString('es-AR')}</span>
+      </div>
+      {calcularDescuento() > 0 && (
+        <div className="ticket-row">
+          <span>Descuento efectivo 10%</span>
+          <span>-${calcularDescuento().toLocaleString('es-AR')}</span>
+        </div>
+      )}
+      <div className="ticket-row" style={{ fontWeight: 'bold' }}>
+        <span>TOTAL</span>
+        <span>${calcularTotal().toLocaleString('es-AR')}</span>
+      </div>
+      {metodosPago.length > 0 && <hr />}
+      {metodosPago.map(metodo => (
+        <div key={metodo.tipo} className="ticket-row">
+          <span>{metodo.tipo.replaceAll('_', ' ').toUpperCase()}</span>
+          <span>${montoNumerico(metodo.monto).toLocaleString('es-AR')}</span>
+        </div>
+      ))}
+      {totalPagado() > calcularTotal() && (
+        <div className="ticket-row">
+          <span>Vuelto</span>
+          <span>${(totalPagado() - calcularTotal()).toLocaleString('es-AR')}</span>
+        </div>
+      )}
+      <hr />
+      <p style={{ textAlign: 'center' }}>Gracias por su visita</p>
+    </div>
+    </>
   );
 }

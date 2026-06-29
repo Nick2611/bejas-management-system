@@ -5,6 +5,7 @@ import {
   Edit,
   FileText,
   History,
+  Loader2,
   RefreshCw,
   Send,
   TrendingUp,
@@ -46,6 +47,7 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Textarea } from './ui/textarea';
+import { useComprobanteAfip } from '../hooks/useComprobanteAfip';
 
 
 const today = () => new Date().toLocaleDateString('en-CA');
@@ -105,6 +107,11 @@ export function Cierre() {
   const [declaredClosure, setDeclaredClosure] = (
     useState<FiscalClosure | null>(null)
   );
+
+  const {
+    descargar: descargarComprobante,
+    downloadingId,
+  } = useComprobanteAfip();
 
   const load = async () => {
     try {
@@ -664,15 +671,41 @@ export function Cierre() {
                     </p>
                   )}
                 </div>
-                {[
-                  'INVOICE_PENDING',
-                  'INVOICE_REJECTED',
-                  'INVOICE_RETRY_PENDING',
-                ].includes(invoice.status) && (
-                  <Button onClick={() => void retry(invoice)} variant="outline">
-                    <RefreshCw className="w-4 h-4 mr-2" /> Reintentar
-                  </Button>
-                )}
+                <div className="flex flex-col gap-2 items-end shrink-0">
+                  {invoice.status === 'INVOICE_AUTHORIZED' && (
+                    <Button
+                      variant="outline"
+                      className="border-emerald-700 text-emerald-400 hover:bg-emerald-950 hover:text-emerald-300"
+                      onClick={() => descargarComprobante(invoice.id)}
+                      disabled={downloadingId !== null}
+                    >
+                      {downloadingId === invoice.id ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Cargando...
+                        </>
+                      ) : (
+                        <>
+                          <FileText className="w-4 h-4 mr-2" />
+                          Ver comprobante
+                        </>
+                      )}
+                    </Button>
+                  )}
+                  {[
+                    'INVOICE_PENDING',
+                    'INVOICE_REJECTED',
+                    'INVOICE_RETRY_PENDING',
+                  ].includes(invoice.status) && (
+                    <Button
+                      onClick={() => void retry(invoice)}
+                      variant="outline"
+                      className="border-[#5a5a5a] text-[#f5f5dc] hover:bg-[#2a2a2a]"
+                    >
+                      <RefreshCw className="w-4 h-4 mr-2" /> Reintentar
+                    </Button>
+                  )}
+                </div>
               </CardContent>
             </Card>
           ))}

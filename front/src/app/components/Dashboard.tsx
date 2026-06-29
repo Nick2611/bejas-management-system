@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import {
   ArrowRight,
   TableProperties,
   Beer,
   TrendingUp,
+  TrendingDown,
   FileText,
   Activity,
   AlertTriangle,
@@ -12,11 +13,16 @@ import {
   Calendar,
   Zap,
   BarChart2,
+  Target,
+  Check,
 } from 'lucide-react';
 import {
   Area,
   AreaChart,
+  Bar,
+  BarChart,
   CartesianGrid,
+  Cell,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -28,8 +34,13 @@ import { fetchProducts, type Product } from '../services/productsApi';
 import {
   fetchKpiSummary,
   fetchSalesHistory,
+  fetchMonthlySummary,
+  fetchGoals,
+  createGoal,
+  updateGoal,
   type DailyKpiPoint,
   type DailySalesHistory,
+  type Goal,
 } from '../services/businessApi';
 
 interface DashboardStats {
@@ -63,15 +74,24 @@ function fmtDate(iso: string): string {
 
 function isWeekend(iso: string): boolean {
   const day = new Date(iso + 'T12:00:00').getDay();
-  return day === 5 || day === 6; // Fri or Sat (local)
+  return day === 5 || day === 6;
 }
 
-interface TooltipProps {
+const MONTH_NAMES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+];
+
+const WEEKDAY_LABELS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+
+// ── Tooltips ──────────────────────────────────────────────────────────────────
+
+interface SalesTooltipProps {
   active?: boolean;
   payload?: Array<{ payload: DailyKpiPoint }>;
 }
 
-function SalesTooltip({ active, payload }: TooltipProps) {
+function SalesTooltip({ active, payload }: SalesTooltipProps) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload;
   const [year, mon, day] = d.date.split('-');
@@ -81,26 +101,54 @@ function SalesTooltip({ active, payload }: TooltipProps) {
   return (
     <div className="bg-[#111111] border border-amber-500/25 rounded-xl p-3 shadow-2xl text-xs min-w-[160px]">
       <p className="text-amber-400 font-semibold mb-2 capitalize">{label}</p>
-      <p className="text-white font-bold text-sm mb-1">{d.total_sales.toLocaleString('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0 })}</p>
+      <p className="text-white font-bold text-sm mb-1">
+        {d.total_sales.toLocaleString('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0 })}
+      </p>
       <p className="text-zinc-400">{d.sales_count} {d.sales_count === 1 ? 'cierre' : 'cierres'}</p>
       <p className="text-zinc-400">{d.total_people} personas</p>
     </div>
   );
 }
 
+interface WeekdayTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: { name: string; avg: number } }>;
+}
+
+function WeekdayTooltip({ active, payload }: WeekdayTooltipProps) {
+  if (!active || !payload?.length) return null;
+  const { name, avg } = payload[0].payload;
+  return (
+    <div className="bg-[#111111] border border-amber-500/25 rounded-xl p-3 shadow-2xl text-xs">
+      <p className="text-amber-400 font-semibold mb-1">{name}</p>
+      <p className="text-white font-bold">{fmtPeso(avg)} promedio</p>
+    </div>
+  );
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+
 export function Dashboard() {
   const { user, isAdmin } = useAuth();
   const navigate = useNavigate();
+
   const [stats, setStats] = useState<DashboardStats>({
-    mesasActivas: 0,
-    barrilesOptimos: 0,
-    productosLowStock: 0,
-    ventasHoy: 0,
+    mesasActivas: 0, barrilesOptimos: 0, productosLowStock: 0, ventasHoy: 0,
   });
   const [now, setNow] = useState(new Date());
   const [history, setHistory] = useState<DailySalesHistory | null>(null);
   const [historyDays, setHistoryDays] = useState<30 | 60>(60);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Monthly comparison
+  const [currentMonthSales, setCurrentMonthSales] = useState<number | null>(null);
+  const [prevMonthSales, setPrevMonthSales] = useState<number | null>(null);
+
+  // Goal
+  const [monthlyGoal, setMonthlyGoal] = useState<Goal | null>(null);
+  const [goalLoaded, setGoalLoaded] = useState(false);
+  const [goalInput, setGoalInput] = useState('');
+  const [savingGoal, setSavingGoal] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
@@ -126,8 +174,37 @@ export function Dashboard() {
         barrilesOptimos = inv.barrilesOptimos;
         productosLowStock = inv.productosLowStock;
       }
+
       if (isAdmin) {
-        try { ventasHoy = (await fetchKpiSummary()).daily.total_sales; } catch { /* noop */ }
+        const today = new Date();
+        const curYear = today.getFullYear();
+        const curMonth = today.getMonth() + 1; // 1-12
+        const prevYear = curMonth === 1 ? curYear - 1 : curYear;
+        const prevMonth = curMonth === 1 ? 12 : curMonth - 1;
+
+        const [kpiResult, prevMonthResult, goalsResult] = await Promise.allSettled([
+          fetchKpiSummary(),
+          fetchMonthlySummary(prevYear, prevMonth),
+          fetchGoals(),
+        ]);
+
+        if (kpiResult.status === 'fulfilled') {
+          ventasHoy = kpiResult.value.daily.total_sales;
+          setCurrentMonthSales(kpiResult.value.monthly.total_sales);
+        }
+        if (prevMonthResult.status === 'fulfilled') {
+          setPrevMonthSales(prevMonthResult.value.total_sales);
+        }
+        if (goalsResult.status === 'fulfilled') {
+          const goal = goalsResult.value.find(g => {
+            if (g.period !== 'mensual') return false;
+            const [y, m] = g.start_date.split('-').map(Number);
+            return y === curYear && m === curMonth;
+          }) ?? null;
+          setMonthlyGoal(goal);
+          setGoalInput(goal ? String(goal.target_amount) : '');
+        }
+        setGoalLoaded(true);
       }
 
       setStats({ mesasActivas, barrilesOptimos, productosLowStock, ventasHoy });
@@ -144,6 +221,56 @@ export function Dashboard() {
       .finally(() => setHistoryLoading(false));
   }, [isAdmin, historyDays]);
 
+  const handleSaveGoal = async () => {
+    const amount = parseInt(goalInput, 10);
+    if (!amount || amount <= 0) return;
+    setSavingGoal(true);
+    try {
+      if (monthlyGoal) {
+        const updated = await updateGoal(monthlyGoal.id, { target_amount: amount });
+        setMonthlyGoal(updated);
+      } else {
+        const created = await createGoal({ period: 'mensual', target_amount: amount });
+        setMonthlyGoal(created);
+      }
+    } catch { /* noop */ } finally {
+      setSavingGoal(false);
+    }
+  };
+
+  // Weekday averages (Mon=0 … Sun=6), only days with sales
+  const weekdayData = useMemo(() => {
+    if (!history?.days.length) return [];
+    const totals: number[] = new Array(7).fill(0);
+    const counts: number[] = new Array(7).fill(0);
+    for (const d of history.days) {
+      if (d.total_sales <= 0) continue;
+      const jsDay = new Date(d.date + 'T12:00:00').getDay(); // 0=Sun..6=Sat
+      const idx = (jsDay + 6) % 7;                           // 0=Mon..6=Sun
+      totals[idx] += d.total_sales;
+      counts[idx] += 1;
+    }
+    return WEEKDAY_LABELS.map((name, i) => ({
+      name,
+      avg: counts[i] > 0 ? Math.round(totals[i] / counts[i]) : 0,
+    }));
+  }, [history]);
+
+  const maxWeekdayAvg = weekdayData.length > 0 ? Math.max(...weekdayData.map(d => d.avg)) : 0;
+
+  // Comparison helpers
+  const todayDate = new Date();
+  const curMonthName = MONTH_NAMES[todayDate.getMonth()];
+  const prevMonthName = MONTH_NAMES[todayDate.getMonth() === 0 ? 11 : todayDate.getMonth() - 1];
+
+  const pctDiff =
+    prevMonthSales !== null && prevMonthSales > 0 && currentMonthSales !== null
+      ? Math.round(((currentMonthSales - prevMonthSales) / prevMonthSales) * 100)
+      : null;
+
+  const goalPct = monthlyGoal ? Math.min(Math.round(monthlyGoal.progress * 100), 100) : 0;
+
+  // Stat cards
   const statCards = [
     {
       label: 'Mesas Activas',
@@ -191,7 +318,7 @@ export function Dashboard() {
     ...(isAdmin ? [{ label: 'Cierres y Facturación', path: '/cierre', icon: FileText, desc: 'Balances y tickets AFIP' }] : []),
   ];
 
-  // Chart data — inject weekend flag for potential dot coloring
+  // Area chart data
   const chartData = (history?.days ?? []).map(d => ({
     ...d,
     weekend: isWeekend(d.date) ? d.total_sales : null,
@@ -226,7 +353,7 @@ export function Dashboard() {
           <p className="mt-1.5 text-sm text-zinc-600">Estación de Cervezas Bejas</p>
         </div>
 
-        {/* Stats */}
+        {/* Stat cards */}
         <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${isAdmin ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
           {statCards.map(card => {
             const Icon = card.icon;
@@ -248,10 +375,163 @@ export function Dashboard() {
           })}
         </div>
 
-        {/* Sales history chart — admin only */}
+        {/* ── Comparación mensual + Meta ── admin only */}
+        {isAdmin && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+            {/* Comparación mensual */}
+            <div className="rounded-2xl border border-white/[0.08] bg-[#111111] p-6">
+              <div className="flex items-center gap-2 mb-5">
+                <BarChart2 className="h-4 w-4 text-amber-400" />
+                <h2 className="text-[11px] font-semibold tracking-[0.18em] text-amber-400 uppercase">
+                  Comparación mensual
+                </h2>
+              </div>
+
+              <div className="space-y-4">
+                {/* Mes actual */}
+                <div>
+                  <div className="flex items-baseline gap-2.5 flex-wrap">
+                    <span className="text-2xl font-bold text-white">
+                      {currentMonthSales !== null ? fmtPeso(currentMonthSales) : '—'}
+                    </span>
+                    {pctDiff !== null && (
+                      <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${
+                        pctDiff >= 0
+                          ? 'bg-emerald-500/15 text-emerald-400'
+                          : 'bg-red-500/15 text-red-400'
+                      }`}>
+                        {pctDiff >= 0
+                          ? <TrendingUp className="h-3 w-3" />
+                          : <TrendingDown className="h-3 w-3" />}
+                        {pctDiff >= 0 ? '+' : ''}{pctDiff}% vs anterior
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm text-zinc-500 mt-1 capitalize">
+                    {curMonthName}
+                    <span className="ml-2 text-xs text-amber-400/50 font-medium">· en curso</span>
+                  </p>
+                </div>
+
+                <div className="h-px bg-white/[0.05]" />
+
+                {/* Mes anterior */}
+                <div>
+                  <div className="text-lg font-semibold text-zinc-400">
+                    {prevMonthSales !== null ? fmtPeso(prevMonthSales) : '—'}
+                  </div>
+                  <p className="text-sm text-zinc-600 mt-0.5 capitalize">{prevMonthName}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Meta mensual */}
+            <div className="rounded-2xl border border-white/[0.08] bg-[#111111] p-6">
+              <div className="flex items-center gap-2 mb-5">
+                <Target className="h-4 w-4 text-amber-400" />
+                <h2 className="text-[11px] font-semibold tracking-[0.18em] text-amber-400 uppercase">
+                  Meta mensual
+                </h2>
+              </div>
+
+              {!goalLoaded ? (
+                <div className="h-20 flex items-center justify-center">
+                  <p className="text-sm text-zinc-600">Cargando...</p>
+                </div>
+              ) : !monthlyGoal ? (
+                /* No hay meta: mostrar formulario de creación */
+                <div className="space-y-4">
+                  <p className="text-sm text-zinc-500 capitalize">
+                    Definí tu meta de ventas para {curMonthName}.
+                  </p>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm pointer-events-none">$</span>
+                      <input
+                        type="number"
+                        min="1"
+                        value={goalInput}
+                        onChange={e => setGoalInput(e.target.value)}
+                        placeholder="ej. 500000"
+                        className="w-full bg-white/[0.04] border border-white/[0.1] rounded-xl pl-7 pr-3 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-amber-400/50"
+                        onKeyDown={e => { if (e.key === 'Enter') void handleSaveGoal(); }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveGoal()}
+                      disabled={savingGoal || !goalInput}
+                      className="px-4 py-2.5 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 text-sm font-medium hover:bg-amber-500/30 transition-all disabled:opacity-40"
+                    >
+                      {savingGoal ? '...' : 'Definir'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Meta existente: barra de progreso + edición inline */
+                <div className="space-y-4">
+                  {/* Barra */}
+                  <div>
+                    <div className="flex justify-between items-baseline mb-2">
+                      <span className="text-sm text-zinc-400">
+                        {fmtPeso(monthlyGoal.current_sales)} vendido
+                      </span>
+                      <span className={`text-sm font-bold ${
+                        goalPct >= 100 ? 'text-emerald-400' : 'text-amber-400'
+                      }`}>
+                        {goalPct}%
+                      </span>
+                    </div>
+                    <div className="h-3 rounded-full bg-white/[0.06] overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-700 ${
+                          goalPct >= 100
+                            ? 'bg-emerald-400'
+                            : goalPct >= 70
+                              ? 'bg-amber-400'
+                              : 'bg-amber-600'
+                        }`}
+                        style={{ width: `${goalPct}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-zinc-600 mt-1.5">
+                      Meta: {fmtPeso(monthlyGoal.target_amount)}
+                    </p>
+                  </div>
+
+                  {/* Edición inline */}
+                  <div className="flex gap-2 items-center pt-2 border-t border-white/[0.05]">
+                    <div className="relative flex-1">
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500 text-xs pointer-events-none">$</span>
+                      <input
+                        type="number"
+                        min="1"
+                        value={goalInput}
+                        onChange={e => setGoalInput(e.target.value)}
+                        className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg pl-6 pr-3 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-amber-400/50"
+                        onKeyDown={e => { if (e.key === 'Enter') void handleSaveGoal(); }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveGoal()}
+                      disabled={savingGoal || goalInput === String(monthlyGoal.target_amount)}
+                      className="p-1.5 rounded-lg bg-amber-500/15 text-amber-400 border border-amber-500/25 hover:bg-amber-500/25 transition-all disabled:opacity-40"
+                      title="Guardar nueva meta"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Gráfico de evolución ── admin only */}
         {isAdmin && (
           <div className="rounded-2xl border border-white/[0.08] bg-[#111111] p-6">
-            {/* Chart header */}
             <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
               <div className="flex items-center gap-2">
                 <BarChart2 className="h-4 w-4 text-amber-400" />
@@ -277,7 +557,6 @@ export function Dashboard() {
               </div>
             </div>
 
-            {/* Summary row */}
             {history && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
                 {[
@@ -294,7 +573,6 @@ export function Dashboard() {
               </div>
             )}
 
-            {/* Chart */}
             {historyLoading && (
               <div className="h-64 flex items-center justify-center">
                 <p className="text-zinc-600 text-sm">Cargando datos...</p>
@@ -346,7 +624,6 @@ export function Dashboard() {
                     dot={false}
                     activeDot={{ r: 4, fill: '#D4AF37', stroke: '#0a0a0a', strokeWidth: 2 }}
                   />
-                  {/* Weekend overlay */}
                   <Area
                     type="monotone"
                     dataKey="weekend"
@@ -361,7 +638,6 @@ export function Dashboard() {
               </ResponsiveContainer>
             )}
 
-            {/* Legend */}
             {!historyLoading && chartData.length > 0 && (
               <div className="flex items-center gap-4 mt-3 justify-end">
                 <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
@@ -377,9 +653,66 @@ export function Dashboard() {
           </div>
         )}
 
-        {/* Bottom grid */}
+        {/* ── Gráfico por día de semana ── admin only */}
+        {isAdmin && weekdayData.length > 0 && (
+          <div className="rounded-2xl border border-white/[0.08] bg-[#111111] p-6">
+            <div className="flex items-center gap-3 mb-5 flex-wrap">
+              <div className="flex items-center gap-2">
+                <BarChart2 className="h-4 w-4 text-amber-400" />
+                <h2 className="text-[11px] font-semibold tracking-[0.18em] text-amber-400 uppercase">
+                  Venta promedio por día
+                </h2>
+              </div>
+              <span className="text-xs text-zinc-600">
+                basado en los últimos {historyDays} días · solo días con ventas
+              </span>
+            </div>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={weekdayData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" vertical={false} />
+                <XAxis
+                  dataKey="name"
+                  tick={{ fill: '#71717a', fontSize: 12 }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  tickFormatter={yTickFormatter}
+                  tick={{ fill: '#71717a', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={52}
+                />
+                <Tooltip content={<WeekdayTooltip />} cursor={{ fill: '#ffffff05' }} />
+                <Bar dataKey="avg" radius={[6, 6, 0, 0]}>
+                  {weekdayData.map((entry, index) => (
+                    <Cell
+                      key={`cell-${index}`}
+                      fill={
+                        entry.avg === maxWeekdayAvg && maxWeekdayAvg > 0
+                          ? '#D4AF37'
+                          : '#3f3f46'
+                      }
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            {maxWeekdayAvg > 0 && (
+              <p className="text-xs text-zinc-600 mt-2 text-right">
+                <span className="inline-flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full bg-amber-400 inline-block" />
+                  Día de mayor promedio: {weekdayData.find(d => d.avg === maxWeekdayAvg)?.name}
+                  {' — '}{fmtPeso(maxWeekdayAvg)}
+                </span>
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* ── Sistema + Acceso rápido ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* System status */}
+          {/* Estado del sistema */}
           <div className="rounded-2xl border border-white/[0.08] bg-[#111111] p-6">
             <div className="flex items-center gap-2 mb-6">
               <Activity className="h-4 w-4 text-amber-400" />
@@ -414,7 +747,7 @@ export function Dashboard() {
             </div>
           </div>
 
-          {/* Quick access */}
+          {/* Acceso rápido */}
           <div className="rounded-2xl border border-white/[0.08] bg-[#111111] p-6">
             <div className="flex items-center gap-2 mb-6">
               <Zap className="h-4 w-4 text-amber-400" />

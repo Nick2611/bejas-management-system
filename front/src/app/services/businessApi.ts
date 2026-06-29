@@ -1,4 +1,4 @@
-import { apiRequest } from './apiClient';
+import { API_URL, apiRequest, getApiErrorMessage } from './apiClient';
 import type { PaymentMethod } from './tablesApi';
 
 export interface InvoiceAttempt {
@@ -251,6 +251,24 @@ export const fetchClosings = () =>
 
 export const fetchInvoices = () =>
   apiRequest<Invoice[]>('/invoices', {}, { fallback: 'No se pudieron cargar las facturas' });
+
+export const getInvoice = (id: number) =>
+  apiRequest<Invoice>(`/invoices/${id}`, {}, { fallback: 'No se pudo consultar el estado de la factura' });
+
+export async function getComprobantePdf(id: number): Promise<Blob> {
+  const token = localStorage.getItem('bejas_access_token');
+  const response = await fetch(`${API_URL}/invoices/${id}/comprobante`, {
+    headers: {
+      Accept: 'application/pdf',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as unknown;
+    throw new Error(getApiErrorMessage(payload, response.status, 'No se pudo obtener el comprobante'));
+  }
+  return response.blob();
+}
 
 export const retryInvoice = (id: number) =>
   apiRequest<Invoice>(`/invoices/${id}/retry`, { method: 'POST' }, {

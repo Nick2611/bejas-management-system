@@ -1,7 +1,9 @@
+import logging
 from datetime import date
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import ValidationError
 
 from auth.auth import is_admin
@@ -13,8 +15,10 @@ from invoices.models.invoice_models import (
     RetryInvoicePeriodRequest,
     RetryInvoicePeriodResponse,
 )
+from invoices.pdf_generator import EmisorConfig, generar_comprobante_pdf
 from invoices.service.invoice_service import InvoiceService
 
+logger = logging.getLogger(__name__)
 
 invoice_router = APIRouter(prefix="/invoices", tags=["invoices"])
 AdminClaims = Annotated[dict, Depends(is_admin)]
@@ -84,6 +88,41 @@ def get_invoice(
     claims: AdminClaims,
 ):
     return InvoiceService(session).get_invoice(invoice_id)
+
+
+@invoice_router.get("/{invoice_id}/comprobante")
+def get_comprobante(
+    invoice_id: int,
+    session: SessionDep,
+    claims: AdminClaims,
+):
+    """
+    Descarga el comprobante PDF de una factura autorizada.
+
+    - 200 application/pdf   → factura AUTHORIZED, devuelve el PDF inline.
+    - 404                   → factura no encontrada.
+    - 409                   → todavía en proceso (PENDING/QUEUED/AUTHORIZING/RETRY).
+    - 422                   → rechazada por AFIP (incluye motivo).
+    """
+    invoice = InvoiceService(session).get_for_pdf(invoice_id)
+    try:
+        pdf_bytes = generar_comprobante_pdf(invoice, EmisorConfig())
+    except Exception:
+        logger.exception("Error generando PDF para factura %d", invoice_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno al generar el comprobante",
+        )
+    filename = (
+        f"comprobante_FC_"
+        f"{invoice.point_of_sale:04d}-"
+        f"{invoice.voucher_number:08d}.pdf"
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @invoice_router.post("/{invoice_id}/retry", response_model=InvoiceResponse)
